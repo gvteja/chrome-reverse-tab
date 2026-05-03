@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Reverse Vertical Tab Placement",
+  "description": "Places new tabs at the top, while keeping child tabs next to their opener and inside the opener's tab group.",
+  "version": "1.0.0",
+  "minimum_chrome_version": "88",
+  "permissions": [
+    "webNavigation"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  }
+}
