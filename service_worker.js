@@ -9,11 +9,19 @@ const AUTO_GROUP_TITLE = "Related links";
 const AUTO_GROUP_COLOR = "blue";
 const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
+const CREATED_TAB_METADATA_SETTLE_MS = 100;
+const STARTUP_RESTORE_GUARD_MS = 15000;
+const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
+let startupRestoreGuardUntil = 0;
+
+chrome.runtime.onStartup.addListener(() => {
+  setStartupRestoreGuard(Date.now() + STARTUP_RESTORE_GUARD_MS);
+});
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
   if (!Number.isInteger(details.tabId) || !Number.isInteger(details.sourceTabId)) {
@@ -33,9 +41,18 @@ chrome.tabs.onCreated.addListener((tab) => {
     return;
   }
 
+  const createdAt = Date.now();
+  const preserveAsStartupRestore = isStartupRestoreGuardActive(createdAt);
+
   enqueueForWindow(tab.windowId, async () => {
+    if (await preserveAsStartupRestore) {
+      return;
+    }
+
     if (navigationSources.has(tab.id) || Number.isInteger(tab.openerTabId)) {
       await delay(SOURCE_TAB_WAIT_MS);
+    } else {
+      await delay(CREATED_TAB_METADATA_SETTLE_MS);
     }
 
     await placeCreatedTab(tab);
@@ -119,6 +136,10 @@ async function placeCreatedTab(createdTab) {
     return;
   }
 
+  if (shouldPreserveChromePlacedTab(tab)) {
+    return;
+  }
+
   await moveToTopOfUnpinnedTabs(tab.id, tab.windowId);
 }
 
@@ -140,6 +161,38 @@ async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
     markNavigationTabHandled(tabId);
     await placeLinkCreatedTab(tabId, sourceTabId);
   });
+}
+
+function shouldPreserveChromePlacedTab(tab) {
+  return tab.status === "unloaded" || tab.discarded || tab.groupId !== NO_GROUP;
+}
+
+function setStartupRestoreGuard(guardUntil) {
+  startupRestoreGuardUntil = guardUntil;
+
+  chrome.storage.local.set({ [STARTUP_RESTORE_GUARD_STORAGE_KEY]: guardUntil }).catch((error) => {
+    console.warn("Unable to persist startup restore guard:", error);
+  });
+}
+
+async function isStartupRestoreGuardActive(referenceTime = Date.now()) {
+  if (referenceTime < startupRestoreGuardUntil) {
+    return true;
+  }
+
+  try {
+    const stored = await chrome.storage.local.get(STARTUP_RESTORE_GUARD_STORAGE_KEY);
+    startupRestoreGuardUntil = Number(stored[STARTUP_RESTORE_GUARD_STORAGE_KEY]) || 0;
+
+    if (referenceTime < startupRestoreGuardUntil) {
+      return true;
+    }
+
+    chrome.storage.local.remove(STARTUP_RESTORE_GUARD_STORAGE_KEY).catch(() => {});
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 async function placeLinkCreatedTab(tabId, sourceTabId) {

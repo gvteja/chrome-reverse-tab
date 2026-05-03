@@ -16,6 +16,8 @@ For automatic group creation:
 
 Chrome does not expose a browser-extension API for detecting whether a window is currently using vertical tabs, so this ordering is applied in every tab-strip mode.
 
+During Chrome startup/session restore, the extension preserves Chrome's restored tab order and restored tab groups instead of applying new-tab placement to those restored tabs.
+
 Chrome also does not expose an API to scroll the tab strip after an existing tab is moved. The extension does a best-effort active-tab refocus after moving a tab, but native `Cmd+T` still has to be corrected after Chrome creates the tab.
 
 For the smoothest new-tab behavior, use the extension command:
@@ -30,4 +32,4 @@ That command creates the tab at the top index directly instead of creating it el
 3. Click **Load unpacked**.
 4. Select this folder.
 
-No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. The `tabGroups` permission is used only to name and color automatically created groups.
+No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. The `tabGroups` permission is used only to name and color automatically created groups. The `storage` permission is used only to remember one expiring timestamp for the brief startup/session-restore guard.
