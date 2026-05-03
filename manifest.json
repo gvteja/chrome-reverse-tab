@@ -8,6 +8,15 @@
     "tabGroups",
     "webNavigation"
   ],
+  "commands": {
+    "new-tab-at-top": {
+      "suggested_key": {
+        "default": "Alt+Shift+T",
+        "mac": "Option+Shift+T"
+      },
+      "description": "Open a new tab at the top of the unpinned tab section"
+    }
+  },
   "background": {
     "service_worker": "service_worker.js"
   }

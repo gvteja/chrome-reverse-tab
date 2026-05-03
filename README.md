@@ -16,6 +16,14 @@ For automatic group creation:
 
 Chrome does not expose a browser-extension API for detecting whether a window is currently using vertical tabs, so this ordering is applied in every tab-strip mode.
 
+Chrome also does not expose an API to scroll the tab strip after an existing tab is moved. The extension does a best-effort active-tab refocus after moving a tab, but native `Cmd+T` still has to be corrected after Chrome creates the tab.
+
+For the smoothest new-tab behavior, use the extension command:
+- Default: `Alt+Shift+T`
+- macOS: `Option+Shift+T`
+
+That command creates the tab at the top index directly instead of creating it elsewhere and moving it afterward. Chrome does not allow extensions to override the built-in `Cmd+T` shortcut, but you can change extension shortcuts at `chrome://extensions/shortcuts`.
+
 ## Install locally
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.

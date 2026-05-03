@@ -1,6 +1,7 @@
 const NO_GROUP = -1;
-const SOURCE_TAB_WAIT_MS = 100;
+const SOURCE_TAB_WAIT_MS = 25;
 const SOURCE_TAB_TTL_MS = 30000;
+const TARGET_TAB_WAIT_ATTEMPTS = 8;
 const GROUP_CLEANUP_WAIT_MS = 100;
 const AUTO_GROUP_CHILD_THRESHOLD = 2;
 const AUTO_GROUP_WINDOW_MS = 120000;
@@ -10,6 +11,7 @@ const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
 
 const navigationSources = new Map();
+const handledNavigationTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
 
@@ -19,6 +21,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
   }
 
   navigationSources.set(details.tabId, details.sourceTabId);
+  maybePlaceNavigationCreatedTab(details.tabId, details.sourceTabId);
 
   setTimeout(() => {
     navigationSources.delete(details.tabId);
@@ -31,13 +34,33 @@ chrome.tabs.onCreated.addListener((tab) => {
   }
 
   enqueueForWindow(tab.windowId, async () => {
-    await delay(SOURCE_TAB_WAIT_MS);
+    if (navigationSources.has(tab.id) || Number.isInteger(tab.openerTabId)) {
+      await delay(SOURCE_TAB_WAIT_MS);
+    }
+
     await placeCreatedTab(tab);
+  });
+});
+
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== "new-tab-at-top") {
+    return;
+  }
+
+  const windowId = Number.isInteger(tab?.windowId) ? tab.windowId : undefined;
+  if (Number.isInteger(windowId)) {
+    enqueueForWindow(windowId, () => createNewTabAtTop(windowId));
+    return;
+  }
+
+  createNewTabAtTop().catch((error) => {
+    console.warn("Unable to create new tab at top:", error);
   });
 });
 
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   navigationSources.delete(tabId);
+  handledNavigationTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
 
   for (const candidate of autoGroupCandidates.values()) {
@@ -84,9 +107,50 @@ async function placeCreatedTab(createdTab) {
     return;
   }
 
-  const opener = await getNavigationSource(tab.id, tab.windowId);
+  if (handledNavigationTabs.has(tab.id)) {
+    return;
+  }
 
-  if (!opener || opener.pinned) {
+  const sourceTabId = navigationSources.get(tab.id);
+  if (Number.isInteger(sourceTabId)) {
+    navigationSources.delete(tab.id);
+    markNavigationTabHandled(tab.id);
+    await placeLinkCreatedTab(tab.id, sourceTabId);
+    return;
+  }
+
+  await moveToTopOfUnpinnedTabs(tab.id, tab.windowId);
+}
+
+async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
+  await delay(SOURCE_TAB_WAIT_MS);
+
+  const tab = await waitForTab(tabId);
+  if (!tab) {
+    navigationSources.delete(tabId);
+    return;
+  }
+
+  enqueueForWindow(tab.windowId, async () => {
+    if (handledNavigationTabs.has(tabId) || navigationSources.get(tabId) !== sourceTabId) {
+      return;
+    }
+
+    navigationSources.delete(tabId);
+    markNavigationTabHandled(tabId);
+    await placeLinkCreatedTab(tabId, sourceTabId);
+  });
+}
+
+async function placeLinkCreatedTab(tabId, sourceTabId) {
+  const tab = await getTab(tabId);
+  if (!tab || tab.pinned) {
+    return;
+  }
+
+  const opener = await getTab(sourceTabId);
+
+  if (!opener || opener.windowId !== tab.windowId || opener.pinned) {
     await moveToTopOfUnpinnedTabs(tab.id, tab.windowId);
 
     if (opener?.pinned) {
@@ -104,20 +168,25 @@ async function placeCreatedTab(createdTab) {
   }
 }
 
-async function getNavigationSource(tabId, windowId) {
-  const sourceTabId = navigationSources.get(tabId);
-  navigationSources.delete(tabId);
+async function waitForTab(tabId) {
+  for (let attempt = 0; attempt < TARGET_TAB_WAIT_ATTEMPTS; attempt += 1) {
+    const tab = await getTab(tabId);
+    if (tab) {
+      return tab;
+    }
 
-  if (!Number.isInteger(sourceTabId)) {
-    return undefined;
+    await delay(SOURCE_TAB_WAIT_MS);
   }
 
-  const opener = await getTab(sourceTabId);
-  if (!opener || opener.windowId !== windowId) {
-    return undefined;
-  }
+  return undefined;
+}
 
-  return opener;
+function markNavigationTabHandled(tabId) {
+  handledNavigationTabs.add(tabId);
+
+  setTimeout(() => {
+    handledNavigationTabs.delete(tabId);
+  }, SOURCE_TAB_TTL_MS);
 }
 
 async function moveToTopOfUnpinnedTabs(tabId, windowId) {
@@ -127,16 +196,35 @@ async function moveToTopOfUnpinnedTabs(tabId, windowId) {
       return;
     }
 
-    const tabs = await chrome.tabs.query({ windowId });
-    tabs.sort((a, b) => a.index - b.index);
-
-    const firstUnpinned = tabs.find((candidate) => !candidate.pinned);
-    const targetIndex = firstUnpinned ? firstUnpinned.index : 0;
+    const targetIndex = await getTopUnpinnedIndex(windowId);
 
     if (tab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
     }
+
+    await refocusTabIfActive(tabId);
   });
+}
+
+async function createNewTabAtTop(preferredWindowId) {
+  const windowId = Number.isInteger(preferredWindowId)
+    ? preferredWindowId
+    : await getLastFocusedWindowId();
+
+  if (!Number.isInteger(windowId)) {
+    return;
+  }
+
+  const targetIndex = await getTopUnpinnedIndex(windowId);
+  const tab = await chrome.tabs.create({
+    active: true,
+    index: targetIndex,
+    windowId
+  });
+
+  if (Number.isInteger(tab.id)) {
+    await refocusTabIfActive(tab.id);
+  }
 }
 
 async function moveNextToOpener(tabId, openerTabId) {
@@ -169,6 +257,8 @@ async function moveNextToOpener(tabId, openerTabId) {
     if (refreshedTab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
     }
+
+    await refocusTabIfActive(tabId);
   });
 }
 
@@ -190,6 +280,7 @@ async function maybeAddPinnedSourceTabToAutoGroup(sourceTabId, tabId, windowId) 
 
     await moveTabToTopOfGroup(tabId, groupId, windowId);
     await moveGroupToTopOfUnpinnedTabs(groupId, windowId);
+    await refocusTabIfActive(tabId);
   });
 }
 
@@ -313,6 +404,34 @@ async function moveGroupToTopOfUnpinnedTabs(groupId, windowId) {
   const firstUnpinned = tabs.find((tab) => !tab.pinned);
   if (firstUnpinned) {
     await chrome.tabGroups.move(groupId, { index: firstUnpinned.index });
+  }
+}
+
+async function getTopUnpinnedIndex(windowId) {
+  const tabs = await chrome.tabs.query({ windowId });
+  tabs.sort((a, b) => a.index - b.index);
+
+  const firstUnpinned = tabs.find((tab) => !tab.pinned);
+  return firstUnpinned ? firstUnpinned.index : tabs.length;
+}
+
+async function getLastFocusedWindowId() {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (Number.isInteger(tabs[0]?.windowId)) {
+      return tabs[0].windowId;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+async function refocusTabIfActive(tabId) {
+  const tab = await getTab(tabId);
+  if (tab?.active) {
+    await chrome.tabs.update(tabId, { active: true });
   }
 }
 
