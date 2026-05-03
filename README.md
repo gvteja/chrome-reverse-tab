@@ -1,10 +1,20 @@
 # Reverse Vertical Tab Placement
 
-A small Chrome Manifest extension that changes tab placement behavior to be similar to Arc browser:
+A small Chrome extension that changes tab placement behavior inspired by Arc and Dia:
 - New tabs open at the top of the unpinned tab section.
 - Links opened from pinned tabs also open at the top of the unpinned tab section.
 - Links opened from unpinned tabs open immediately below the opener tab.
 - Links opened from grouped tabs are added to the same tab group and placed immediately below the opener inside that group.
+- If you open 2 or more links from the same ungrouped tab within 2 minutes, those tabs are treated as related and grouped automatically, similar to Dia's auto tab grouping behavior.
+- If closing a tab leaves only one tab in a tab group, that remaining tab is automatically ungrouped and left open.
+
+For automatic group creation:
+- If the source tab is unpinned, the source tab and the related child tabs are grouped together.
+- If the source tab is pinned, the pinned tab stays pinned and only the related child tabs are grouped.
+- The group is named `Related links`.
+- No AI or page-content analysis is used. The grouping signal is only tab-open frequency from the same source tab.
+
+Chrome does not expose a browser-extension API for detecting whether a window is currently using vertical tabs, so this ordering is applied in every tab-strip mode.
 
 ## Install locally
 1. Open `chrome://extensions`.
@@ -12,4 +22,4 @@ A small Chrome Manifest extension that changes tab placement behavior to be simi
 3. Click **Load unpacked**.
 4. Select this folder.
 
-No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation.
+No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. The `tabGroups` permission is used only to name and color automatically created groups.
