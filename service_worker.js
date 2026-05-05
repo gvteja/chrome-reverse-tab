@@ -136,6 +136,11 @@ async function placeCreatedTab(createdTab) {
     return;
   }
 
+  if (Number.isInteger(tab.openerTabId)) {
+    await placeLinkCreatedTab(tab.id, tab.openerTabId);
+    return;
+  }
+
   if (shouldPreserveChromePlacedTab(tab)) {
     return;
   }

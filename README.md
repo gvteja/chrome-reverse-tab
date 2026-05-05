@@ -5,6 +5,7 @@ A small Chrome extension that changes tab placement behavior inspired by Arc and
 - Links opened from pinned tabs also open at the top of the unpinned tab section.
 - Links opened from unpinned tabs open immediately below the opener tab.
 - Links opened from grouped tabs are added to the same tab group and placed immediately below the opener inside that group.
+- Duplicated tabs open immediately below the tab being duplicated.
 - If you open 2 or more links from the same ungrouped tab within 2 minutes, those tabs are treated as related and grouped automatically, similar to Dia's auto tab grouping behavior.
 - If closing a tab leaves only one tab in a tab group, that remaining tab is automatically ungrouped and left open.
 
