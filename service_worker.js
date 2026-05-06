@@ -49,7 +49,7 @@ chrome.tabs.onCreated.addListener((tab) => {
       return;
     }
 
-    if (navigationSources.has(tab.id) || Number.isInteger(tab.openerTabId)) {
+    if (navigationSources.has(tab.id)) {
       await delay(SOURCE_TAB_WAIT_MS);
     } else {
       await delay(CREATED_TAB_METADATA_SETTLE_MS);
@@ -136,7 +136,10 @@ async function placeCreatedTab(createdTab) {
     return;
   }
 
-  if (Number.isInteger(tab.openerTabId)) {
+  if (
+    Number.isInteger(tab.openerTabId) &&
+    await isDuplicateOfOpener(tab, tab.openerTabId)
+  ) {
     await placeLinkCreatedTab(tab.id, tab.openerTabId);
     return;
   }
@@ -145,7 +148,7 @@ async function placeCreatedTab(createdTab) {
     return;
   }
 
-  await moveToTopOfUnpinnedTabs(tab.id, tab.windowId);
+  await placeNewTabAtTop(tab.id, tab.windowId);
 }
 
 async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
@@ -169,7 +172,32 @@ async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
 }
 
 function shouldPreserveChromePlacedTab(tab) {
-  return tab.status === "unloaded" || tab.discarded || tab.groupId !== NO_GROUP;
+  return tab.status === "unloaded" || tab.discarded;
+}
+
+async function isDuplicateOfOpener(tab, openerTabId) {
+  const opener = await getTab(openerTabId);
+  if (!opener || opener.windowId !== tab.windowId) {
+    return false;
+  }
+
+  const tabUrl = getComparableTabUrl(tab);
+  const openerUrl = getComparableTabUrl(opener);
+
+  return Boolean(
+    tabUrl &&
+    openerUrl &&
+    tabUrl === openerUrl &&
+    !isBlankNewTabUrl(tabUrl)
+  );
+}
+
+function getComparableTabUrl(tab) {
+  return tab.pendingUrl || tab.url || "";
+}
+
+function isBlankNewTabUrl(url) {
+  return url === "chrome://newtab/" || url === "chrome://new-tab-page/" || url === "about:blank";
 }
 
 function setStartupRestoreGuard(guardUntil) {
@@ -262,6 +290,25 @@ async function moveToTopOfUnpinnedTabs(tabId, windowId) {
 
     await refocusTabIfActive(tabId);
   });
+}
+
+async function placeNewTabAtTop(tabId, windowId) {
+  await moveWithRetry(async () => {
+    const tab = await getTab(tabId);
+    if (!tab || tab.pinned || shouldPreserveChromePlacedTab(tab)) {
+      return;
+    }
+
+    await ungroupTabIfGrouped(tab.id);
+    await moveToTopOfUnpinnedTabs(tab.id, windowId);
+  });
+}
+
+async function ungroupTabIfGrouped(tabId) {
+  const tab = await getTab(tabId);
+  if (tab && tab.groupId !== NO_GROUP) {
+    await chrome.tabs.ungroup(tabId);
+  }
 }
 
 async function createNewTabAtTop(preferredWindowId) {
