@@ -7,7 +7,35 @@ const AUTO_GROUP_CHILD_THRESHOLD = 2;
 const AUTO_GROUP_WINDOW_MS = 120000;
 const AUTO_GROUP_FALLBACK_TITLE = "Related links";
 const AUTO_GROUP_MAX_TITLE_LENGTH = 64;
-const AUTO_GROUP_COLOR = "blue";
+const AUTO_GROUP_EMOJIS = [
+  "🔎",
+  "📌",
+  "🧭",
+  "🗂️",
+  "💡",
+  "📝",
+  "⚙️",
+  "📊",
+  "🧪",
+  "🚀",
+  "🎯",
+  "📚",
+  "🛠️",
+  "🧩",
+  "🌐",
+  "💬"
+];
+const AUTO_GROUP_COLORS = [
+  "grey",
+  "blue",
+  "red",
+  "yellow",
+  "green",
+  "pink",
+  "purple",
+  "cyan",
+  "orange"
+];
 const NANO_PROMPT_TIMEOUT_MS = 6000;
 const NANO_LANGUAGE_MODEL_OPTIONS = {
   expectedInputs: [{ type: "text", languages: ["en"] }],
@@ -546,7 +574,7 @@ async function createAutoGroup(sourceTab) {
 
     const groupId = await chrome.tabs.group({ tabIds });
     await chrome.tabGroups.update(groupId, {
-      color: AUTO_GROUP_COLOR,
+      color: getRandomAutoGroupColor(),
       title: getFallbackAutoGroupTitle(currentSourceTab)
     });
 
@@ -558,6 +586,10 @@ async function createAutoGroup(sourceTab) {
 
     return groupId;
   });
+}
+
+function getRandomAutoGroupColor() {
+  return AUTO_GROUP_COLORS[Math.floor(Math.random() * AUTO_GROUP_COLORS.length)];
 }
 
 async function maybeRenameAutoGroupWithNano(groupId, sourceTab, childTabIds) {
@@ -588,11 +620,10 @@ function buildNanoGroupNamePrompt(sourceTab, childTabs) {
   ];
 
   return [
-    "Name this Chrome tab group.",
-    "Use the shared topic or task behind these tabs.",
-    "Return only the group name, no quotes, no punctuation-only labels, no emoji.",
-    "Avoid generic names like Related Links.",
-    "Keep it short: 2 to 5 words.",
+    "Name this Chrome tab group by extracting the shared topic behind these tabs.",
+    "Return only the group name, no quotes, no punctuation-only labels.",
+    "Start with one relevant emoji, then a space, then the group name.",
+    "Keep the words after the emoji short: 2 to 5 words.",
     "",
     ...tabSummaries
   ].join("\n");
@@ -676,26 +707,46 @@ function resetNanoLanguageModelSession() {
 
 function sanitizeAutoGroupTitle(title) {
   const normalizedTitle = normalizeTabTitle(title)
-    .replace(/^(tab group name|group name|name):\s*/i, "")
+    .replace(/^(tab group name|group name|name|emoji):\s*/i, "")
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/[.]+$/g, "")
     .trim();
 
-  return normalizedTitle ? truncateAutoGroupTitle(normalizedTitle) : "";
+  return normalizedTitle ? formatAutoGroupTitleWithEmojiIfMissing(normalizedTitle) : "";
 }
 
 function getFallbackAutoGroupTitle(sourceTab) {
   const sourceTitle = normalizeTabTitle(sourceTab?.title);
   if (sourceTitle) {
-    return truncateAutoGroupTitle(sourceTitle);
+    return formatAutoGroupTitleWithEmoji(sourceTitle);
   }
 
   const sourceHost = getTabUrlHost(sourceTab);
   if (sourceHost) {
-    return truncateAutoGroupTitle(sourceHost);
+    return formatAutoGroupTitleWithEmoji(sourceHost);
   }
 
-  return AUTO_GROUP_FALLBACK_TITLE;
+  return formatAutoGroupTitleWithEmoji(AUTO_GROUP_FALLBACK_TITLE);
+}
+
+function formatAutoGroupTitleWithEmoji(title) {
+  return truncateAutoGroupTitle(`${getRandomAutoGroupEmoji()} ${title}`);
+}
+
+function formatAutoGroupTitleWithEmojiIfMissing(title) {
+  if (startsWithEmoji(title)) {
+    return truncateAutoGroupTitle(title);
+  }
+
+  return formatAutoGroupTitleWithEmoji(title);
+}
+
+function startsWithEmoji(title) {
+  return /^\p{Extended_Pictographic}/u.test(title);
+}
+
+function getRandomAutoGroupEmoji() {
+  return AUTO_GROUP_EMOJIS[Math.floor(Math.random() * AUTO_GROUP_EMOJIS.length)];
 }
 
 async function getTabs(tabIds) {

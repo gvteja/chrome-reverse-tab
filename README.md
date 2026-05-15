@@ -9,12 +9,11 @@ Tab placement
 - Links opened from grouped tabs are added to the same tab group and placed immediately below the opener inside that group.
 - Duplicated tabs open immediately below the tab being duplicated.
 
-
 Automatic tab group creation:
 - If you open 2 or more links from the same ungrouped tab within 2 minutes, those tabs are treated as related and grouped automatically, similar to Dia's auto tab grouping behavior.
 - If closing a tab leaves only one tab in a tab group, that remaining tab is automatically ungrouped and left open.
-- The tab group name is automatically set based on the source tab
--- In addition, if local Gemini Nano model is downloded, then we use that to create the tab group name
+- The tab group name is automatically set based on the source tab and prefixed with a random emoji.
+-- If the local Gemini Nano model is downloaded, it creates the tab group emoji and name.
 - If the source tab is pinned, the pinned tab stays pinned and only the related child tabs are grouped.
 
 During Chrome startup/session restore, the extension preserves Chrome's restored tab order and restored tab groups instead of applying new-tab placement to those restored tabs.
