@@ -8,6 +8,11 @@ const AUTO_GROUP_WINDOW_MS = 120000;
 const AUTO_GROUP_FALLBACK_TITLE = "Related links";
 const AUTO_GROUP_MAX_TITLE_LENGTH = 64;
 const AUTO_GROUP_COLOR = "blue";
+const NANO_PROMPT_TIMEOUT_MS = 6000;
+const NANO_LANGUAGE_MODEL_OPTIONS = {
+  expectedInputs: [{ type: "text", languages: ["en"] }],
+  expectedOutputs: [{ type: "text", languages: ["en"] }]
+};
 const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
@@ -21,6 +26,7 @@ const autoGroupCandidates = new Map();
 const windowQueues = new Map();
 const scheduledRefocusTimers = new Map();
 let startupRestoreGuardUntil = 0;
+let nanoSessionPromise;
 
 chrome.runtime.onStartup.addListener(() => {
   setStartupRestoreGuard(Date.now() + STARTUP_RESTORE_GUARD_MS);
@@ -541,18 +547,144 @@ async function createAutoGroup(sourceTab) {
     const groupId = await chrome.tabs.group({ tabIds });
     await chrome.tabGroups.update(groupId, {
       color: AUTO_GROUP_COLOR,
-      title: getAutoGroupTitle(currentSourceTab)
+      title: getFallbackAutoGroupTitle(currentSourceTab)
     });
 
     if (currentSourceTab.pinned) {
       await moveGroupToTopOfUnpinnedTabs(groupId, sourceTab.windowId);
     }
 
+    await maybeRenameAutoGroupWithNano(groupId, currentSourceTab, openChildTabIds);
+
     return groupId;
   });
 }
 
-function getAutoGroupTitle(sourceTab) {
+async function maybeRenameAutoGroupWithNano(groupId, sourceTab, childTabIds) {
+  const nanoTitle = await generateNanoAutoGroupTitle(sourceTab, childTabIds);
+  if (!nanoTitle) {
+    return;
+  }
+
+  try {
+    await chrome.tabGroups.update(groupId, { title: nanoTitle });
+  } catch (error) {
+    console.warn("Unable to update Gemini Nano tab group title:", error);
+  }
+}
+
+async function generateNanoAutoGroupTitle(sourceTab, childTabIds) {
+  const childTabs = await getTabs(childTabIds);
+  const prompt = buildNanoGroupNamePrompt(sourceTab, childTabs);
+  const response = await promptNanoLanguageModel(prompt);
+
+  return sanitizeAutoGroupTitle(response);
+}
+
+function buildNanoGroupNamePrompt(sourceTab, childTabs) {
+  const tabSummaries = [
+    `Source tab: ${formatTabForPrompt(sourceTab)}`,
+    ...childTabs.map((tab, index) => `Opened tab ${index + 1}: ${formatTabForPrompt(tab)}`)
+  ];
+
+  return [
+    "Name this Chrome tab group.",
+    "Use the shared topic or task behind these tabs.",
+    "Return only the group name, no quotes, no punctuation-only labels, no emoji.",
+    "Avoid generic names like Related Links.",
+    "Keep it short: 2 to 5 words.",
+    "",
+    ...tabSummaries
+  ].join("\n");
+}
+
+function formatTabForPrompt(tab) {
+  const title = normalizeTabTitle(tab?.title) || "Untitled";
+  const host = getTabUrlHost(tab);
+  return host ? `${title} (${host})` : title;
+}
+
+async function promptNanoLanguageModel(prompt) {
+  const session = await getNanoLanguageModelSession();
+  if (!session) {
+    return "";
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, NANO_PROMPT_TIMEOUT_MS);
+
+  try {
+    return await session.prompt(prompt, { signal: controller.signal });
+  } catch (error) {
+    if (error.name !== "AbortError") {
+      console.warn("Unable to generate Gemini Nano tab group title:", error);
+      resetNanoLanguageModelSession();
+    }
+
+    return "";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function getNanoLanguageModelSession() {
+  const languageModel = getNanoLanguageModelApi();
+  if (!languageModel) {
+    return undefined;
+  }
+
+  try {
+    const availability = await languageModel.availability(NANO_LANGUAGE_MODEL_OPTIONS);
+    if (availability !== "available") {
+      return undefined;
+    }
+
+    if (!nanoSessionPromise) {
+      nanoSessionPromise = languageModel.create(NANO_LANGUAGE_MODEL_OPTIONS);
+    }
+
+    return await nanoSessionPromise;
+  } catch (error) {
+    console.warn("Unable to create Gemini Nano language model session:", error);
+    resetNanoLanguageModelSession();
+    return undefined;
+  }
+}
+
+function getNanoLanguageModelApi() {
+  const languageModel = globalThis.LanguageModel;
+  return languageModel && typeof languageModel.availability === "function"
+    ? languageModel
+    : undefined;
+}
+
+function resetNanoLanguageModelSession() {
+  if (!nanoSessionPromise) {
+    return;
+  }
+
+  nanoSessionPromise
+    .then((session) => {
+      session.destroy();
+    })
+    .catch(() => {});
+
+  nanoSessionPromise = undefined;
+}
+
+function sanitizeAutoGroupTitle(title) {
+  const normalizedTitle = normalizeTabTitle(title)
+    .replace(/^(tab group name|group name|name):\s*/i, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/[.]+$/g, "")
+    .trim();
+
+  return normalizedTitle ? truncateAutoGroupTitle(normalizedTitle) : "";
+}
+
+function getFallbackAutoGroupTitle(sourceTab) {
   const sourceTitle = normalizeTabTitle(sourceTab?.title);
   if (sourceTitle) {
     return truncateAutoGroupTitle(sourceTitle);
@@ -564,6 +696,19 @@ function getAutoGroupTitle(sourceTab) {
   }
 
   return AUTO_GROUP_FALLBACK_TITLE;
+}
+
+async function getTabs(tabIds) {
+  const tabs = [];
+
+  for (const tabId of tabIds) {
+    const tab = await getTab(tabId);
+    if (tab) {
+      tabs.push(tab);
+    }
+  }
+
+  return tabs;
 }
 
 function normalizeTabTitle(title) {

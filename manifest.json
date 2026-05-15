@@ -19,6 +19,7 @@
       "description": "Open a new tab at the top of the unpinned tab section"
     }
   },
+  "options_page": "options.html",
   "background": {
     "service_worker": "service_worker.js"
   }
