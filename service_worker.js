@@ -12,11 +12,13 @@ const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
+const POST_MOVE_REFOCUS_DELAYS_MS = [150, 500, 1200];
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
+const scheduledRefocusTimers = new Map();
 let startupRestoreGuardUntil = 0;
 
 chrome.runtime.onStartup.addListener(() => {
@@ -42,12 +44,10 @@ chrome.tabs.onCreated.addListener((tab) => {
   }
 
   const createdAt = Date.now();
-  const preserveAsStartupRestore = isStartupRestoreGuardActive(createdAt);
+  const startupRestoreGuardActive = isStartupRestoreGuardActive(createdAt);
 
   enqueueForWindow(tab.windowId, async () => {
-    if (await preserveAsStartupRestore) {
-      return;
-    }
+    const preserveAsStartupRestore = await startupRestoreGuardActive;
 
     if (navigationSources.has(tab.id)) {
       await delay(SOURCE_TAB_WAIT_MS);
@@ -55,7 +55,7 @@ chrome.tabs.onCreated.addListener((tab) => {
       await delay(CREATED_TAB_METADATA_SETTLE_MS);
     }
 
-    await placeCreatedTab(tab);
+    await placeCreatedTab(tab, { preserveAsStartupRestore });
   });
 });
 
@@ -79,6 +79,7 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   navigationSources.delete(tabId);
   handledNavigationTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
+  clearScheduledRefocus(tabId);
 
   for (const candidate of autoGroupCandidates.values()) {
     candidate.childTabs.delete(tabId);
@@ -118,7 +119,7 @@ function enqueueForWindow(windowId, task) {
   windowQueues.set(windowId, nextTask);
 }
 
-async function placeCreatedTab(createdTab) {
+async function placeCreatedTab(createdTab, options = {}) {
   const tab = await getTab(createdTab.id);
   if (!tab || tab.pinned) {
     return;
@@ -137,10 +138,15 @@ async function placeCreatedTab(createdTab) {
   }
 
   if (
-    Number.isInteger(tab.openerTabId) &&
-    await isDuplicateOfOpener(tab, tab.openerTabId)
+    options.preserveAsStartupRestore &&
+    await shouldPreserveStartupRestoreTab(tab, createdTab)
   ) {
-    await placeLinkCreatedTab(tab.id, tab.openerTabId);
+    return;
+  }
+
+  const duplicateSourceTabId = await getDuplicateSourceTabId(tab);
+  if (Number.isInteger(duplicateSourceTabId)) {
+    await placeLinkCreatedTab(tab.id, duplicateSourceTabId);
     return;
   }
 
@@ -172,15 +178,64 @@ async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
 }
 
 function shouldPreserveChromePlacedTab(tab) {
-  return tab.status === "unloaded" || tab.discarded;
+  return !tab.active && (tab.status === "unloaded" || tab.discarded);
 }
 
-async function isDuplicateOfOpener(tab, openerTabId) {
-  const opener = await getTab(openerTabId);
-  if (!opener || opener.windowId !== tab.windowId) {
+async function shouldPreserveStartupRestoreTab(tab, createdTab) {
+  // External URLs that launch Chrome can arrive during the restore guard as active,
+  // loading tabs appended at the end of the window. They still need normal placement.
+  if (await isActiveChromeAppendedLoadingTab(tab, createdTab)) {
     return false;
   }
 
+  return true;
+}
+
+async function isActiveChromeAppendedLoadingTab(tab, createdTab) {
+  if (
+    !tab.active ||
+    tab.discarded ||
+    !wasTabLoadingWhenCreatedOrChecked(tab, createdTab)
+  ) {
+    return false;
+  }
+
+  const tabs = await chrome.tabs.query({ windowId: tab.windowId });
+  const unpinnedTabs = tabs
+    .filter((candidate) => !candidate.pinned)
+    .sort((a, b) => a.index - b.index);
+  const lastUnpinnedTab = unpinnedTabs[unpinnedTabs.length - 1];
+
+  return lastUnpinnedTab?.id === tab.id;
+}
+
+function wasTabLoadingWhenCreatedOrChecked(tab, createdTab) {
+  return (
+    tab.status === "loading" ||
+    createdTab.status === "loading" ||
+    Boolean(tab.pendingUrl) ||
+    Boolean(createdTab.pendingUrl)
+  );
+}
+
+async function getDuplicateSourceTabId(tab) {
+  if (!Number.isInteger(tab.openerTabId)) {
+    return undefined;
+  }
+
+  const opener = await getTab(tab.openerTabId);
+  if (!opener || opener.windowId !== tab.windowId) {
+    return undefined;
+  }
+
+  if (isDuplicateOfOpener(tab, opener) || isChromePlacedDuplicateOfOpener(tab, opener)) {
+    return opener.id;
+  }
+
+  return undefined;
+}
+
+function isDuplicateOfOpener(tab, opener) {
   const tabUrl = getComparableTabUrl(tab);
   const openerUrl = getComparableTabUrl(opener);
 
@@ -190,6 +245,12 @@ async function isDuplicateOfOpener(tab, openerTabId) {
     tabUrl === openerUrl &&
     !isBlankNewTabUrl(tabUrl)
   );
+}
+
+function isChromePlacedDuplicateOfOpener(tab, opener) {
+  // Normal page URLs are unavailable without the "tabs" permission, but Chrome
+  // initially creates duplicated tabs immediately after their opener.
+  return tab.index === opener.index + 1;
 }
 
 function getComparableTabUrl(tab) {
@@ -537,7 +598,49 @@ async function refocusTabIfActive(tabId) {
   const tab = await getTab(tabId);
   if (tab?.active) {
     await chrome.tabs.update(tabId, { active: true });
+    scheduleActiveTabRefocus(tabId);
   }
+}
+
+function scheduleActiveTabRefocus(tabId) {
+  clearScheduledRefocus(tabId);
+
+  const timers = POST_MOVE_REFOCUS_DELAYS_MS.map((delayMs, index) => (
+    setTimeout(() => {
+      refocusActiveTab(tabId).catch((error) => {
+        console.warn("Unable to refocus active tab after move:", error);
+      }).finally(() => {
+        if (
+          index === POST_MOVE_REFOCUS_DELAYS_MS.length - 1 &&
+          scheduledRefocusTimers.get(tabId) === timers
+        ) {
+          scheduledRefocusTimers.delete(tabId);
+        }
+      });
+    }, delayMs)
+  ));
+
+  scheduledRefocusTimers.set(tabId, timers);
+}
+
+async function refocusActiveTab(tabId) {
+  const tab = await getTab(tabId);
+  if (tab?.active) {
+    await chrome.tabs.update(tabId, { active: true });
+  }
+}
+
+function clearScheduledRefocus(tabId) {
+  const timers = scheduledRefocusTimers.get(tabId);
+  if (!timers) {
+    return;
+  }
+
+  for (const timer of timers) {
+    clearTimeout(timer);
+  }
+
+  scheduledRefocusTimers.delete(tabId);
 }
 
 async function ungroupSingletonTabGroups(windowId) {
