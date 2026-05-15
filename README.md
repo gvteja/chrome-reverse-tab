@@ -12,7 +12,7 @@ A small Chrome extension that changes tab placement behavior inspired by Arc and
 For automatic group creation:
 - If the source tab is unpinned, the source tab and the related child tabs are grouped together.
 - If the source tab is pinned, the pinned tab stays pinned and only the related child tabs are grouped.
-- The group is named `Related links`.
+- The group is named from the source tab title, with `Related links` used only when a source title is unavailable.
 - No AI or page-content analysis is used. The grouping signal is only tab-open frequency from the same source tab.
 
 Chrome does not expose a browser-extension API for detecting whether a window is currently using vertical tabs, so this ordering is applied in every tab-strip mode.
@@ -33,4 +33,4 @@ That command creates the tab at the top index directly instead of creating it el
 3. Click **Load unpacked**.
 4. Select this folder.
 
-No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. The `tabGroups` permission is used only to name and color automatically created groups. The `storage` permission is used only to remember one expiring timestamp for the brief startup/session-restore guard.
+No host permissions are requested, and the extension does not read page content. The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. The `tabs` permission is used only to read tab metadata for naming automatically created groups and detecting duplicated tabs. The `tabGroups` permission is used only to name and color automatically created groups. The `storage` permission is used only to remember one expiring timestamp for the brief startup/session-restore guard.

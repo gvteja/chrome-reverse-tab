@@ -5,7 +5,8 @@ const TARGET_TAB_WAIT_ATTEMPTS = 8;
 const GROUP_CLEANUP_WAIT_MS = 100;
 const AUTO_GROUP_CHILD_THRESHOLD = 2;
 const AUTO_GROUP_WINDOW_MS = 120000;
-const AUTO_GROUP_TITLE = "Related links";
+const AUTO_GROUP_FALLBACK_TITLE = "Related links";
+const AUTO_GROUP_MAX_TITLE_LENGTH = 64;
 const AUTO_GROUP_COLOR = "blue";
 const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
@@ -540,7 +541,7 @@ async function createAutoGroup(sourceTab) {
     const groupId = await chrome.tabs.group({ tabIds });
     await chrome.tabGroups.update(groupId, {
       color: AUTO_GROUP_COLOR,
-      title: AUTO_GROUP_TITLE
+      title: getAutoGroupTitle(currentSourceTab)
     });
 
     if (currentSourceTab.pinned) {
@@ -549,6 +550,46 @@ async function createAutoGroup(sourceTab) {
 
     return groupId;
   });
+}
+
+function getAutoGroupTitle(sourceTab) {
+  const sourceTitle = normalizeTabTitle(sourceTab?.title);
+  if (sourceTitle) {
+    return truncateAutoGroupTitle(sourceTitle);
+  }
+
+  const sourceHost = getTabUrlHost(sourceTab);
+  if (sourceHost) {
+    return truncateAutoGroupTitle(sourceHost);
+  }
+
+  return AUTO_GROUP_FALLBACK_TITLE;
+}
+
+function normalizeTabTitle(title) {
+  return typeof title === "string" ? title.replace(/\s+/g, " ").trim() : "";
+}
+
+function getTabUrlHost(tab) {
+  const tabUrl = getComparableTabUrl(tab);
+  if (!tabUrl || isBlankNewTabUrl(tabUrl)) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(tabUrl);
+    return parsedUrl.hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function truncateAutoGroupTitle(title) {
+  if (title.length <= AUTO_GROUP_MAX_TITLE_LENGTH) {
+    return title;
+  }
+
+  return `${title.slice(0, AUTO_GROUP_MAX_TITLE_LENGTH - 3).trimEnd()}...`;
 }
 
 async function moveTabToTopOfGroup(tabId, groupId, windowId) {
