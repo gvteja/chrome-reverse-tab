@@ -46,13 +46,11 @@ const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
-const POST_MOVE_REFOCUS_DELAYS_MS = [150, 500, 1200];
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
-const scheduledRefocusTimers = new Map();
 let startupRestoreGuardUntil = 0;
 let nanoSessionPromise;
 
@@ -114,7 +112,6 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   navigationSources.delete(tabId);
   handledNavigationTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
-  clearScheduledRefocus(tabId);
 
   for (const candidate of autoGroupCandidates.values()) {
     candidate.childTabs.delete(tabId);
@@ -383,21 +380,101 @@ async function moveToTopOfUnpinnedTabs(tabId, windowId) {
     if (tab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
     }
-
-    await refocusTabIfActive(tabId);
   });
 }
 
 async function placeNewTabAtTop(tabId, windowId) {
+  const tab = await getTab(tabId);
+  if (!tab || tab.pinned || shouldPreserveChromePlacedTab(tab)) {
+    return;
+  }
+
+  // Moving an already-active tab to the top does not make Chrome scroll the tab
+  // strip, so the strip stays parked at the bottom even though the new active
+  // tab is now at the top. Recreating the tab directly at the top index instead
+  // makes Chrome scroll to it the same way it scrolls to any freshly created
+  // tab. Only the active tab needs this; background tabs don't need a scroll and
+  // recreating them would steal focus.
+  if (await maybeRecreateActiveTabAtTop(tab, windowId)) {
+    return;
+  }
+
   await moveWithRetry(async () => {
-    const tab = await getTab(tabId);
-    if (!tab || tab.pinned || shouldPreserveChromePlacedTab(tab)) {
+    const currentTab = await getTab(tabId);
+    if (!currentTab || currentTab.pinned || shouldPreserveChromePlacedTab(currentTab)) {
       return;
     }
 
-    await ungroupTabIfGrouped(tab.id);
-    await moveToTopOfUnpinnedTabs(tab.id, windowId);
+    await ungroupTabIfGrouped(currentTab.id);
+    await moveToTopOfUnpinnedTabs(currentTab.id, windowId);
   });
+}
+
+async function maybeRecreateActiveTabAtTop(tab, windowId) {
+  if (!tab.active) {
+    return false;
+  }
+
+  const targetIndex = await getTopUnpinnedIndex(windowId);
+  if (tab.index === targetIndex) {
+    return false;
+  }
+
+  const url = getRecreatableTabUrl(tab);
+  if (url === undefined) {
+    return false;
+  }
+
+  // Create the replacement before removing the original so the active tab never
+  // briefly flips to a neighbor (which would flash that tab's content).
+  let createdTab;
+  try {
+    createdTab = await moveWithRetry(() =>
+      chrome.tabs.create(buildTopTabCreateProperties(url, targetIndex, windowId))
+    );
+  } catch (error) {
+    console.warn("Unable to recreate new tab at top:", error);
+    return false;
+  }
+
+  if (!Number.isInteger(createdTab?.id)) {
+    return false;
+  }
+
+  try {
+    await moveWithRetry(() => chrome.tabs.remove(tab.id));
+  } catch (error) {
+    console.warn("Unable to remove original tab after recreating at top:", error);
+  }
+
+  return true;
+}
+
+function getRecreatableTabUrl(tab) {
+  const url = getComparableTabUrl(tab);
+
+  // A blank new tab is recreated as the user's default new tab page (no url).
+  if (!url || isBlankNewTabUrl(url)) {
+    return "";
+  }
+
+  // Only http(s) URLs can be safely reopened by the extension. Privileged URLs
+  // (chrome://, file://, etc.) can't, so signal the caller to fall back to a
+  // move instead of removing a tab we couldn't recreate.
+  if (/^https?:\/\//i.test(url)) {
+    return url;
+  }
+
+  return undefined;
+}
+
+function buildTopTabCreateProperties(url, index, windowId) {
+  const properties = { active: true, index, windowId };
+  if (url) {
+    properties.url = url;
+  }
+
+  return properties;
 }
 
 async function ungroupTabIfGrouped(tabId) {
@@ -417,15 +494,7 @@ async function createNewTabAtTop(preferredWindowId) {
   }
 
   const targetIndex = await getTopUnpinnedIndex(windowId);
-  const tab = await chrome.tabs.create({
-    active: true,
-    index: targetIndex,
-    windowId
-  });
-
-  if (Number.isInteger(tab.id)) {
-    await refocusTabIfActive(tab.id);
-  }
+  await chrome.tabs.create(buildTopTabCreateProperties("", targetIndex, windowId));
 }
 
 async function moveNextToOpener(tabId, openerTabId) {
@@ -458,8 +527,6 @@ async function moveNextToOpener(tabId, openerTabId) {
     if (refreshedTab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
     }
-
-    await refocusTabIfActive(tabId);
   });
 }
 
@@ -481,7 +548,6 @@ async function maybeAddPinnedSourceTabToAutoGroup(sourceTabId, tabId, windowId) 
 
     await moveTabToTopOfGroup(tabId, groupId, windowId);
     await moveGroupToTopOfUnpinnedTabs(groupId, windowId);
-    await refocusTabIfActive(tabId);
   });
 }
 
@@ -829,55 +895,6 @@ async function getLastFocusedWindowId() {
   }
 
   return undefined;
-}
-
-async function refocusTabIfActive(tabId) {
-  const tab = await getTab(tabId);
-  if (tab?.active) {
-    await chrome.tabs.update(tabId, { active: true });
-    scheduleActiveTabRefocus(tabId);
-  }
-}
-
-function scheduleActiveTabRefocus(tabId) {
-  clearScheduledRefocus(tabId);
-
-  const timers = POST_MOVE_REFOCUS_DELAYS_MS.map((delayMs, index) => (
-    setTimeout(() => {
-      refocusActiveTab(tabId).catch((error) => {
-        console.warn("Unable to refocus active tab after move:", error);
-      }).finally(() => {
-        if (
-          index === POST_MOVE_REFOCUS_DELAYS_MS.length - 1 &&
-          scheduledRefocusTimers.get(tabId) === timers
-        ) {
-          scheduledRefocusTimers.delete(tabId);
-        }
-      });
-    }, delayMs)
-  ));
-
-  scheduledRefocusTimers.set(tabId, timers);
-}
-
-async function refocusActiveTab(tabId) {
-  const tab = await getTab(tabId);
-  if (tab?.active) {
-    await chrome.tabs.update(tabId, { active: true });
-  }
-}
-
-function clearScheduledRefocus(tabId) {
-  const timers = scheduledRefocusTimers.get(tabId);
-  if (!timers) {
-    return;
-  }
-
-  for (const timer of timers) {
-    clearTimeout(timer);
-  }
-
-  scheduledRefocusTimers.delete(tabId);
 }
 
 async function ungroupSingletonTabGroups(windowId) {

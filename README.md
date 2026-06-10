@@ -18,13 +18,13 @@ Automatic tab group creation:
 
 During Chrome startup/session restore, the extension preserves Chrome's restored tab order and restored tab groups instead of applying new-tab placement to those restored tabs.
 
-Chrome also does not expose an API to scroll the tab strip after an existing tab is moved. The extension does a best-effort active-tab refocus after moving a tab, but native `Cmd+T` still has to be corrected after Chrome creates the tab.
+Chrome does not expose an API to scroll the tab strip after an existing tab is moved, so simply moving a new active tab to the top leaves the strip parked at the bottom. To keep the strip scrolled to the new tab, the extension instead recreates an active new top tab directly at the top index (creating a tab at an index makes Chrome scroll to it). Blank new tabs are recreated as your default new tab page; an externally opened link is reopened once at the top. Tabs opened in the background, and privileged URLs the extension can't reopen, are still moved rather than recreated.
 
 For the smoothest new-tab behavior, use the extension command:
 - Default: `Alt+Shift+T`
 - macOS: `Option+Shift+T`
 
-That command creates the tab at the top index directly instead of creating it elsewhere and moving it afterward. Chrome does not allow extensions to override the built-in `Cmd+T` shortcut, but you can change extension shortcuts at `chrome://extensions/shortcuts`.
+That command creates the tab at the top index directly in one step, with no reposition or reload. Chrome does not allow extensions to override the built-in `Cmd+T` shortcut, but you can change extension shortcuts at `chrome://extensions/shortcuts`.
 
 ## Install locally
 1. Open `chrome://extensions`.
