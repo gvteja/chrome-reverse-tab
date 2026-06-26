@@ -50,6 +50,7 @@ const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
+const extensionPlacedTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
 let startupRestoreGuardUntil = 0;
@@ -131,6 +132,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   navigationSources.delete(tabId);
   handledNavigationTabs.delete(tabId);
+  extensionPlacedTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
 
   for (const candidate of autoGroupCandidates.values()) {
@@ -172,6 +174,10 @@ function enqueueForWindow(windowId, task) {
 }
 
 async function placeCreatedTab(createdTab, options = {}) {
+  if (extensionPlacedTabs.delete(createdTab.id)) {
+    return;
+  }
+
   const tab = await getTab(createdTab.id);
   if (!tab || tab.pinned) {
     return;
@@ -380,6 +386,18 @@ async function waitForTab(tabId) {
   return undefined;
 }
 
+// Tabs the extension creates itself fire onCreated like user-opened tabs, but
+// they are already at their intended index. Re-placing them is normally a
+// no-op, but when another tab is opened during placement the re-run would
+// recreate the replacement at the top again and leapfrog the newer tab.
+function markExtensionPlacedTab(tabId) {
+  extensionPlacedTabs.add(tabId);
+
+  setTimeout(() => {
+    extensionPlacedTabs.delete(tabId);
+  }, SOURCE_TAB_TTL_MS);
+}
+
 function markNavigationTabHandled(tabId) {
   handledNavigationTabs.add(tabId);
 
@@ -517,6 +535,8 @@ async function maybeRecreateActiveTabAtTop(tab, windowId) {
     return false;
   }
 
+  markExtensionPlacedTab(createdTab.id);
+
   try {
     await moveWithRetry(() => chrome.tabs.remove(tab.id));
   } catch (error) {
@@ -570,7 +590,11 @@ async function createNewTabAtTop(preferredWindowId) {
   }
 
   const targetIndex = await getTopUnpinnedIndex(windowId);
-  await chrome.tabs.create(buildTopTabCreateProperties("", targetIndex, windowId));
+  const createdTab = await chrome.tabs.create(buildTopTabCreateProperties("", targetIndex, windowId));
+
+  if (Number.isInteger(createdTab?.id)) {
+    markExtensionPlacedTab(createdTab.id);
+  }
 }
 
 async function moveNextToOpener(tabId, openerTabId) {
