@@ -44,6 +44,8 @@ const NANO_LANGUAGE_MODEL_OPTIONS = {
 const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
+const ACTIVE_TAB_SETTLE_ATTEMPTS = 4;
+const ACTIVE_TAB_SETTLE_MS = 40;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
 const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
@@ -268,12 +270,11 @@ async function isActiveChromeAppendedLoadingTab(tab, createdTab) {
 }
 
 function wasTabLoadingWhenCreatedOrChecked(tab, createdTab) {
-  return (
-    tab.status === "loading" ||
-    createdTab.status === "loading" ||
-    Boolean(tab.pendingUrl) ||
-    Boolean(createdTab.pendingUrl)
-  );
+  return isLoadingTab(tab) || isLoadingTab(createdTab);
+}
+
+function isLoadingTab(tab) {
+  return tab.status === "loading" || Boolean(tab.pendingUrl);
 }
 
 async function getDuplicateSourceTabId(tab) {
@@ -504,10 +505,51 @@ async function placeNewTabAtTop(tabId, windowId) {
   });
 }
 
+// External app launches (e.g. opening a link from Slack) create the tab a beat
+// before Chrome marks it active and brings it to the foreground. The metadata
+// settle delay can run during that gap, leaving tab.active false even though
+// Chrome is about to focus the tab. Only the recreate-at-top path scrolls the
+// tab strip, and it is gated on the tab being active, so without this the tab
+// lands at the top via a plain move and the strip never scrolls to it. Poll
+// briefly for the active state to settle so these tabs still scroll. Genuine
+// background tabs stay inactive through the poll and keep their no-scroll move;
+// recreating them would steal focus.
+async function waitForActiveTabToSettle(tab, windowId) {
+  if (tab.active) {
+    return tab;
+  }
+
+  if (!isLoadingTab(tab)) {
+    return undefined;
+  }
+
+  for (let attempt = 0; attempt < ACTIVE_TAB_SETTLE_ATTEMPTS; attempt += 1) {
+    await delay(ACTIVE_TAB_SETTLE_MS);
+
+    const refreshedTab = await getTab(tab.id);
+    if (!refreshedTab || refreshedTab.windowId !== windowId) {
+      return undefined;
+    }
+
+    if (refreshedTab.active) {
+      return refreshedTab;
+    }
+
+    if (!isLoadingTab(refreshedTab)) {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
 async function maybeRecreateActiveTabAtTop(tab, windowId) {
-  if (!tab.active) {
+  const activeTab = await waitForActiveTabToSettle(tab, windowId);
+  if (!activeTab) {
     return false;
   }
+
+  tab = activeTab;
 
   const targetIndex = await getTopUnpinnedIndex(windowId);
   if (tab.index === targetIndex) {
