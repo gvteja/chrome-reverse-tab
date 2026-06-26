@@ -46,6 +46,7 @@ const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
+const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
@@ -56,6 +57,25 @@ let nanoSessionPromise;
 
 chrome.runtime.onStartup.addListener(() => {
   setStartupRestoreGuard(Date.now() + STARTUP_RESTORE_GUARD_MS);
+});
+
+chrome.runtime.onInstalled.addListener(setupMoveTabToTopMenu);
+
+// onInstalled alone can miss cases (e.g. the service worker restarting without a
+// reinstall), so also ensure the menu exists every time the worker starts.
+// Recreating is cheap and removeAll keeps it idempotent.
+setupMoveTabToTopMenu();
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== MOVE_TAB_TO_TOP_MENU_ID) {
+    return;
+  }
+
+  if (!tab || !Number.isInteger(tab.id) || !Number.isInteger(tab.windowId)) {
+    return;
+  }
+
+  enqueueForWindow(tab.windowId, () => moveSelectedTabsToTop(tab.windowId));
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
@@ -380,6 +400,62 @@ async function moveToTopOfUnpinnedTabs(tabId, windowId) {
     if (tab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
     }
+  });
+}
+
+function setupMoveTabToTopMenu() {
+  // removeAll first so re-running this (on restart/update) can't fail with a
+  // duplicate-id error for an entry that already exists.
+  chrome.contextMenus.removeAll(() => {
+    void chrome.runtime.lastError;
+
+    chrome.contextMenus.create(
+      {
+        id: MOVE_TAB_TO_TOP_MENU_ID,
+        title: "Move selected tabs to top",
+        // "tab" attaches to the native tab strip, but some (e.g. managed) Chrome
+        // setups never render tab-strip items. "page" reliably shows on the page
+        // body and the click handler resolves the same tab either way.
+        contexts: ["page", "tab"]
+      },
+      () => {
+        if (chrome.runtime.lastError) {
+          console.warn(
+            "Unable to create the move-tab-to-top context menu:",
+            chrome.runtime.lastError.message
+          );
+        }
+      }
+    );
+  });
+}
+
+// Moves the user's currently selected (highlighted) tabs to the top of the
+// unpinned section, keeping their relative order. The highlighted set is
+// whatever was multi-selected in the tab strip (Cmd/Shift-click), or just the
+// active tab when nothing else is selected. Existing tabs hold live page state,
+// so they are moved in place rather than recreated (recreating would reload
+// them and lose that state); a plain move does not scroll the tab strip, which
+// is fine for a user-initiated action.
+async function moveSelectedTabsToTop(windowId) {
+  const highlightedTabs = await chrome.tabs.query({ windowId, highlighted: true });
+  const movableTabs = highlightedTabs
+    .filter((tab) => !tab.pinned)
+    .sort((a, b) => a.index - b.index);
+
+  if (movableTabs.length === 0) {
+    return;
+  }
+
+  const tabIds = movableTabs.map((tab) => tab.id);
+
+  await moveWithRetry(async () => {
+    for (const tabId of tabIds) {
+      await ungroupTabIfGrouped(tabId);
+    }
+
+    const targetIndex = await getTopUnpinnedIndex(windowId);
+    await chrome.tabs.move(tabIds, { index: targetIndex });
   });
 }
 
