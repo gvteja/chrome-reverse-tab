@@ -26,12 +26,16 @@ For the smoothest new-tab behavior, use the extension command:
 
 That command creates the tab at the top index directly in one step, with no reposition or reload. Chrome does not allow extensions to override the built-in `Cmd+T` shortcut, but you can change extension shortcuts at `chrome://extensions/shortcuts`.
 
+The extension adds two actions to the toolbar popup, tab-strip/page right-click menu, and extension options page:
+- **Move selected tabs to top** moves the currently highlighted tabs to the top of the unpinned section.
+- **Copy selected tab URLs** copies the currently highlighted tabs' URLs in tab-strip order, one URL per line.
+
 ## Install locally
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
 4. Select this folder.
-5. Open the extension's **Details** page and click **Extension options** to check or prepare the local Gemini Nano model.
+5. Open the extension's **Details** page and click **Extension options** to run selected-tab actions or check and prepare the local Gemini Nano model.
 
 Permissions
 - No host permissions are requested, and the extension does not read page content. 
@@ -39,6 +43,7 @@ Permissions
 - The `tabs` permission is used only to read tab metadata for naming automatically created groups and detecting duplicated tabs. 
 - The `tabGroups` permission is used only to name and color automatically created groups. 
 - The `storage` permission is used only to remember one expiring timestamp for the brief startup/session-restore guard. 
+- The `clipboardWrite` and `offscreen` permissions are used only to copy selected tab URLs to the clipboard.
 - Gemini Nano naming uses Chrome's local Prompt API; tab titles and hostnames are not sent to the Gemini web API. Chrome may download the local model once if it is supported but not already installed.
 
 Source code is public. So you can read yourself/have your agent investigate. 

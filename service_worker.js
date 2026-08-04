@@ -49,6 +49,10 @@ const ACTIVE_TAB_SETTLE_MS = 40;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
 const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
+const COPY_SELECTED_TAB_URLS_MENU_ID = "copy-selected-tab-urls";
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const OFFSCREEN_COPY_MESSAGE_TARGET = "offscreen-clipboard";
+const SELECTED_TAB_ACTION_MESSAGE_TYPE = "run-selected-tab-action";
 
 const navigationSources = new Map();
 const handledNavigationTabs = new Set();
@@ -57,28 +61,59 @@ const autoGroupCandidates = new Map();
 const windowQueues = new Map();
 let startupRestoreGuardUntil = 0;
 let nanoSessionPromise;
+let offscreenDocumentPromise;
 
 chrome.runtime.onStartup.addListener(() => {
   setStartupRestoreGuard(Date.now() + STARTUP_RESTORE_GUARD_MS);
 });
 
-chrome.runtime.onInstalled.addListener(setupMoveTabToTopMenu);
+chrome.runtime.onInstalled.addListener(setupTabContextMenus);
 
 // onInstalled alone can miss cases (e.g. the service worker restarting without a
 // reinstall), so also ensure the menu exists every time the worker starts.
 // Recreating is cheap and removeAll keeps it idempotent.
-setupMoveTabToTopMenu();
+setupTabContextMenus();
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== MOVE_TAB_TO_TOP_MENU_ID) {
-    return;
-  }
-
   if (!tab || !Number.isInteger(tab.id) || !Number.isInteger(tab.windowId)) {
     return;
   }
 
-  enqueueForWindow(tab.windowId, () => moveSelectedTabsToTop(tab.windowId));
+  if (info.menuItemId === MOVE_TAB_TO_TOP_MENU_ID) {
+    enqueueForWindow(tab.windowId, () => moveSelectedTabsToTop(tab.windowId));
+    return;
+  }
+
+  if (info.menuItemId === COPY_SELECTED_TAB_URLS_MENU_ID) {
+    copySelectedTabUrls(tab.windowId).catch((error) => {
+      console.warn("Unable to copy selected tab URLs:", error);
+    });
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    message?.type !== SELECTED_TAB_ACTION_MESSAGE_TYPE ||
+    sender.id !== chrome.runtime.id
+  ) {
+    return;
+  }
+
+  const windowId = Number.isInteger(sender.tab?.windowId)
+    ? sender.tab.windowId
+    : message.windowId;
+
+  runSelectedTabAction(message.action, windowId)
+    .then((result) => sendResponse({ ok: true, ...result }))
+    .catch((error) => {
+      console.warn("Unable to run selected tab action:", error);
+      sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    });
+
+  return true;
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
@@ -422,31 +457,119 @@ async function moveToTopOfUnpinnedTabs(tabId, windowId) {
   });
 }
 
-function setupMoveTabToTopMenu() {
+function setupTabContextMenus() {
   // removeAll first so re-running this (on restart/update) can't fail with a
   // duplicate-id error for an entry that already exists.
   chrome.contextMenus.removeAll(() => {
     void chrome.runtime.lastError;
 
-    chrome.contextMenus.create(
-      {
-        id: MOVE_TAB_TO_TOP_MENU_ID,
-        title: "Move selected tabs to top",
-        // "tab" attaches to the native tab strip, but some (e.g. managed) Chrome
-        // setups never render tab-strip items. "page" reliably shows on the page
-        // body and the click handler resolves the same tab either way.
-        contexts: ["page", "tab"]
-      },
-      () => {
-        if (chrome.runtime.lastError) {
-          console.warn(
-            "Unable to create the move-tab-to-top context menu:",
-            chrome.runtime.lastError.message
-          );
-        }
-      }
-    );
+    // "tab" attaches to the native tab strip, but some (e.g. managed) Chrome
+    // setups never render tab-strip items. "page" reliably shows on the page
+    // body and resolves the same highlighted tab set.
+    const contexts = ["page", "tab"];
+
+    createContextMenu({
+      id: MOVE_TAB_TO_TOP_MENU_ID,
+      title: "Move selected tabs to top",
+      contexts
+    });
+
+    createContextMenu({
+      id: COPY_SELECTED_TAB_URLS_MENU_ID,
+      title: "Copy selected tab URLs",
+      contexts
+    });
   });
+}
+
+function createContextMenu(properties) {
+  chrome.contextMenus.create(properties, () => {
+    if (chrome.runtime.lastError) {
+      console.warn(
+        `Unable to create the ${properties.id} context menu:`,
+        chrome.runtime.lastError.message
+      );
+    }
+  });
+}
+
+async function copySelectedTabUrls(windowId) {
+  const highlightedTabs = await chrome.tabs.query({ windowId, highlighted: true });
+  const urls = highlightedTabs
+    .sort((a, b) => a.index - b.index)
+    .map(getComparableTabUrl)
+    .filter(Boolean);
+
+  if (urls.length === 0) {
+    return 0;
+  }
+
+  await ensureOffscreenDocument();
+  const response = await chrome.runtime.sendMessage({
+    target: OFFSCREEN_COPY_MESSAGE_TARGET,
+    type: "copy-text",
+    text: urls.join("\n")
+  });
+
+  if (!response?.ok) {
+    throw new Error(response?.error || "The clipboard operation failed.");
+  }
+
+  return urls.length;
+}
+
+async function runSelectedTabAction(action, windowId) {
+  if (!Number.isInteger(windowId)) {
+    throw new Error("Unable to determine which Chrome window to use.");
+  }
+
+  if (action === MOVE_TAB_TO_TOP_MENU_ID) {
+    const movedCount = await moveSelectedTabsToTop(windowId);
+    return {
+      count: movedCount,
+      message: movedCount === 0
+        ? "No unpinned selected tabs are available to move."
+        : movedCount === 1
+          ? "Moved 1 selected tab to the top."
+          : `Moved ${movedCount} selected tabs to the top.`
+    };
+  }
+
+  if (action === COPY_SELECTED_TAB_URLS_MENU_ID) {
+    const copiedCount = await copySelectedTabUrls(windowId);
+    return {
+      count: copiedCount,
+      message: copiedCount === 0
+        ? "No selected tab URLs are available to copy."
+        : copiedCount === 1
+          ? "Copied 1 selected tab URL."
+          : `Copied ${copiedCount} selected tab URLs.`
+    };
+  }
+
+  throw new Error("Unknown selected tab action.");
+}
+
+async function ensureOffscreenDocument() {
+  const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+  const existingClients = await clients.matchAll();
+  const hasOffscreenDocument = existingClients.some((client) => client.url === offscreenUrl);
+
+  if (hasOffscreenDocument) {
+    return;
+  }
+
+  if (!offscreenDocumentPromise) {
+    offscreenDocumentPromise = chrome.offscreen.createDocument({
+      url: OFFSCREEN_DOCUMENT_PATH,
+      reasons: ["CLIPBOARD"],
+      justification: "Copy the selected tab URLs to the clipboard"
+    }).finally(() => {
+      offscreenDocumentPromise = undefined;
+    });
+  }
+
+  await offscreenDocumentPromise;
 }
 
 // Moves the user's currently selected (highlighted) tabs to the top of the
@@ -463,7 +586,7 @@ async function moveSelectedTabsToTop(windowId) {
     .sort((a, b) => a.index - b.index);
 
   if (movableTabs.length === 0) {
-    return;
+    return 0;
   }
 
   const tabIds = movableTabs.map((tab) => tab.id);
@@ -476,6 +599,8 @@ async function moveSelectedTabsToTop(windowId) {
     const targetIndex = await getTopUnpinnedIndex(windowId);
     await chrome.tabs.move(tabIds, { index: targetIndex });
   });
+
+  return tabIds.length;
 }
 
 async function placeNewTabAtTop(tabId, windowId) {

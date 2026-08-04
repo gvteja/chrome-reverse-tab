@@ -5,7 +5,10 @@ const NANO_LANGUAGE_MODEL_OPTIONS = {
 
 const prepareModelButton = document.getElementById("prepare-model");
 const checkStatusButton = document.getElementById("check-status");
-const statusMessage = document.getElementById("status");
+const moveSelectedTabsButton = document.getElementById("move-selected-tabs");
+const copySelectedTabUrlsButton = document.getElementById("copy-selected-tab-urls");
+const modelStatusMessage = document.getElementById("model-status");
+const tabActionStatusMessage = document.getElementById("tab-action-status");
 
 checkAvailability();
 
@@ -45,6 +48,37 @@ prepareModelButton.addEventListener("click", async () => {
 
 checkStatusButton.addEventListener("click", checkAvailability);
 
+moveSelectedTabsButton.addEventListener("click", () => {
+  runSelectedTabAction("move-tab-to-top");
+});
+
+copySelectedTabUrlsButton.addEventListener("click", () => {
+  runSelectedTabAction("copy-selected-tab-urls");
+});
+
+async function runSelectedTabAction(action) {
+  setTabActionButtonsDisabled(true);
+
+  try {
+    const currentTab = await chrome.tabs.getCurrent();
+    const response = await chrome.runtime.sendMessage({
+      type: "run-selected-tab-action",
+      action,
+      windowId: currentTab?.windowId
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || "The tab action failed.");
+    }
+
+    showTabActionStatus(response.message);
+  } catch (error) {
+    showTabActionStatus(`Unable to run tab action: ${error.message || error.name || error}`);
+  } finally {
+    setTabActionButtonsDisabled(false);
+  }
+}
+
 async function checkAvailability() {
   const languageModel = getLanguageModelApi();
   if (!languageModel) {
@@ -72,6 +106,15 @@ function setButtonsDisabled(disabled) {
   checkStatusButton.disabled = disabled;
 }
 
+function setTabActionButtonsDisabled(disabled) {
+  moveSelectedTabsButton.disabled = disabled;
+  copySelectedTabUrlsButton.disabled = disabled;
+}
+
 function showStatus(message) {
-  statusMessage.textContent = message;
+  modelStatusMessage.textContent = message;
+}
+
+function showTabActionStatus(message) {
+  tabActionStatusMessage.textContent = message;
 }

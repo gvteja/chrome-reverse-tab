@@ -7,14 +7,31 @@ body {
 
 main {
   box-sizing: border-box;
-  max-width: 520px;
+  max-width: 640px;
   padding: 32px;
 }
 
 h1 {
-  margin: 0 0 24px;
-  font-size: 20px;
+  margin: 0 0 28px;
+  font-size: 22px;
   font-weight: 650;
+}
+
+section + section {
+  margin-top: 32px;
+  padding-top: 28px;
+  border-top: 1px solid #dce2e8;
+}
+
+h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.description {
+  margin: 6px 0 14px;
+  color: #52616f;
 }
 
 .actions {
@@ -45,23 +62,23 @@ button:disabled {
   cursor: default;
 }
 
-#check-status {
+.secondary {
   border-color: #c9d2dc;
   background: #fff;
   color: #1f2933;
 }
 
-#check-status:hover {
+.secondary:hover {
   background: #eef2f7;
 }
 
-#check-status:disabled {
+.secondary:disabled {
   border-color: #c9d2dc;
   background: #f4f6f8;
   color: #7b8794;
 }
 
-#status {
+.status {
   min-height: 21px;
   margin: 16px 0 0;
   color: #52616f;
