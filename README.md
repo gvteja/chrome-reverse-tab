@@ -4,9 +4,9 @@ A small Chrome extension that changes tab placement behavior inspired by Arc and
 
 Tab placement
 - New tabs open at the top of the unpinned tab section. This includes externally opened URLs
-- Links opened from pinned tabs also open at the top of the unpinned tab section.
-- Links opened from unpinned tabs open immediately below the opener tab.
-- Links opened from grouped tabs are added to the same tab group and placed immediately below the opener inside that group.
+- Links opened from pinned tabs start at the top of the unpinned tab section; subsequent links follow the existing child tabs in opening order.
+- Links opened from unpinned tabs appear below the opener in opening order: opener, first link, second link, third link.
+- Links opened from grouped tabs are added to the same tab group, after the opener's existing child tabs in that group.
 - Duplicated tabs open immediately below the tab being duplicated.
 
 Automatic tab group creation:

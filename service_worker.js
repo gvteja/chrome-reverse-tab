@@ -59,6 +59,8 @@ const handledNavigationTabs = new Set();
 const extensionPlacedTabs = new Set();
 const autoGroupCandidates = new Map();
 const windowQueues = new Map();
+const pendingCreatedTabs = new Set();
+const linkSources = new Map();
 let startupRestoreGuardUntil = 0;
 let nanoSessionPromise;
 let offscreenDocumentPromise;
@@ -135,6 +137,7 @@ chrome.tabs.onCreated.addListener((tab) => {
   }
 
   const createdAt = Date.now();
+  pendingCreatedTabs.add(tab.id);
   const startupRestoreGuardActive = isStartupRestoreGuardActive(createdAt);
 
   enqueueForWindow(tab.windowId, async () => {
@@ -146,7 +149,11 @@ chrome.tabs.onCreated.addListener((tab) => {
       await delay(CREATED_TAB_METADATA_SETTLE_MS);
     }
 
-    await placeCreatedTab(tab, { preserveAsStartupRestore });
+    try {
+      await placeCreatedTab(tab, { preserveAsStartupRestore });
+    } finally {
+      pendingCreatedTabs.delete(tab.id);
+    }
   });
 });
 
@@ -171,6 +178,11 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   handledNavigationTabs.delete(tabId);
   extensionPlacedTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
+  pendingCreatedTabs.delete(tabId);
+  linkSources.delete(tabId);
+  for (const [childId, sourceId] of linkSources) {
+    if (sourceId === tabId) linkSources.delete(childId);
+  }
 
   for (const candidate of autoGroupCandidates.values()) {
     candidate.childTabs.delete(tabId);
@@ -241,7 +253,7 @@ async function placeCreatedTab(createdTab, options = {}) {
 
   const duplicateSourceTabId = await getDuplicateSourceTabId(tab);
   if (Number.isInteger(duplicateSourceTabId)) {
-    await placeLinkCreatedTab(tab.id, duplicateSourceTabId);
+    await placeLinkCreatedTab(tab.id, duplicateSourceTabId, { append: false });
     return;
   }
 
@@ -383,26 +395,28 @@ async function isStartupRestoreGuardActive(referenceTime = Date.now()) {
   }
 }
 
-async function placeLinkCreatedTab(tabId, sourceTabId) {
+async function placeLinkCreatedTab(tabId, sourceTabId, { append = true } = {}) {
   const tab = await getTab(tabId);
   if (!tab || tab.pinned) {
     return;
   }
 
   const opener = await getTab(sourceTabId);
+  if (append) linkSources.set(tabId, sourceTabId);
 
   if (!opener || opener.windowId !== tab.windowId || opener.pinned) {
     await moveToTopOfUnpinnedTabs(tab.id, tab.windowId);
 
     if (opener?.pinned) {
       await maybeAddPinnedSourceTabToAutoGroup(opener.id, tab.id, tab.windowId);
+      if (append) await moveNextToOpener(tab.id, opener.id);
       await maybeCreateAutoGroup(opener, tab.id);
     }
 
     return;
   }
 
-  await moveNextToOpener(tab.id, opener.id);
+  await moveNextToOpener(tab.id, opener.id, { append });
 
   if (opener.groupId === NO_GROUP) {
     await maybeCreateAutoGroup(opener, tab.id);
@@ -764,7 +778,7 @@ async function createNewTabAtTop(preferredWindowId) {
   }
 }
 
-async function moveNextToOpener(tabId, openerTabId) {
+async function moveNextToOpener(tabId, openerTabId, { append = true } = {}) {
   await moveWithRetry(async () => {
     const opener = await getTab(openerTabId);
     const tab = await getTab(tabId);
@@ -789,7 +803,27 @@ async function moveNextToOpener(tabId, openerTabId) {
       return;
     }
 
-    const targetIndex = indexImmediatelyAfter(refreshedTab.index, refreshedOpener.index);
+    let anchor = refreshedOpener.pinned ? undefined : refreshedOpener;
+    if (append) {
+      const tabs = await chrome.tabs.query({ windowId: refreshedTab.windowId });
+      for (const sibling of tabs) {
+        // Pending tabs may already exist in Chrome while their placement is
+        // queued. They must not become anchors for links opened before them.
+        if (
+          sibling.id !== tabId &&
+          !pendingCreatedTabs.has(sibling.id) &&
+          !sibling.pinned &&
+          sibling.groupId === refreshedTab.groupId &&
+          (linkSources.get(sibling.id) ?? sibling.openerTabId) === openerTabId &&
+          (!anchor || sibling.index > anchor.index)
+        ) {
+          anchor = sibling;
+        }
+      }
+    }
+    if (!anchor) return;
+
+    const targetIndex = indexImmediatelyAfter(refreshedTab.index, anchor.index);
 
     if (refreshedTab.index !== targetIndex) {
       await chrome.tabs.move(tabId, { index: targetIndex });
