@@ -1,5 +1,5 @@
 const moveSelectedTabsButton = document.getElementById("move-selected-tabs");
-const copySelectedTabUrlsButton = document.getElementById("copy-selected-tab-urls");
+const copySelectedTabsButtons = document.querySelectorAll(".copy-selected-tabs");
 const openOptionsButton = document.getElementById("open-options");
 const statusMessage = document.getElementById("status");
 
@@ -7,9 +7,11 @@ moveSelectedTabsButton.addEventListener("click", () => {
   runSelectedTabAction("move-tab-to-top");
 });
 
-copySelectedTabUrlsButton.addEventListener("click", () => {
-  runSelectedTabAction("copy-selected-tab-urls");
-});
+for (const button of copySelectedTabsButtons) {
+  button.addEventListener("click", () => {
+    runSelectedTabAction(button.dataset.action);
+  });
+}
 
 openOptionsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
@@ -46,7 +48,9 @@ async function runSelectedTabAction(action) {
 
 function setActionButtonsDisabled(disabled) {
   moveSelectedTabsButton.disabled = disabled;
-  copySelectedTabUrlsButton.disabled = disabled;
+  copySelectedTabsButtons.forEach((button) => {
+    button.disabled = disabled;
+  });
 }
 
 function showStatus(message) {

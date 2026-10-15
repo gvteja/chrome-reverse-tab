@@ -50,6 +50,15 @@ const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
 const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
 const COPY_SELECTED_TAB_URLS_MENU_ID = "copy-selected-tab-urls";
+const COPY_SELECTED_TAB_MARKDOWN_MENU_ID = "copy-selected-tab-markdown";
+const COPY_SELECTED_TAB_BULLETS_MENU_ID = "copy-selected-tab-bullets";
+// Copy actions by id. The plain variant keeps its original id so existing
+// popup/options buttons and menu entries keep working.
+const COPY_FORMATS = {
+  [COPY_SELECTED_TAB_URLS_MENU_ID]: "plain",
+  [COPY_SELECTED_TAB_MARKDOWN_MENU_ID]: "as title formatted md",
+  [COPY_SELECTED_TAB_BULLETS_MENU_ID]: "as bullets"
+};
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const OFFSCREEN_COPY_MESSAGE_TARGET = "offscreen-clipboard";
 const SELECTED_TAB_ACTION_MESSAGE_TYPE = "run-selected-tab-action";
@@ -86,9 +95,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
-  if (info.menuItemId === COPY_SELECTED_TAB_URLS_MENU_ID) {
-    copySelectedTabUrls(tab.windowId).catch((error) => {
-      console.warn("Unable to copy selected tab URLs:", error);
+  if (info.menuItemId in COPY_FORMATS) {
+    copySelectedTabs(tab.windowId, info.menuItemId).catch((error) => {
+      console.warn("Unable to copy selected tab links:", error);
     });
   }
 });
@@ -488,11 +497,13 @@ function setupTabContextMenus() {
       contexts
     });
 
-    createContextMenu({
-      id: COPY_SELECTED_TAB_URLS_MENU_ID,
-      title: "Copy selected tab URLs",
-      contexts
-    });
+    for (const [id, suffix] of Object.entries(COPY_FORMATS)) {
+      createContextMenu({
+        id,
+        title: `Copy selected tab links: ${suffix}`,
+        contexts
+      });
+    }
   });
 }
 
@@ -507,29 +518,66 @@ function createContextMenu(properties) {
   });
 }
 
-async function copySelectedTabUrls(windowId) {
+async function copySelectedTabs(windowId, action) {
   const highlightedTabs = await chrome.tabs.query({ windowId, highlighted: true });
-  const urls = highlightedTabs
+  const tabs = highlightedTabs
     .sort((a, b) => a.index - b.index)
-    .map(getComparableTabUrl)
-    .filter(Boolean);
+    .filter((tab) => getComparableTabUrl(tab));
 
-  if (urls.length === 0) {
+  if (tabs.length === 0) {
     return 0;
   }
+
+  const text = action === COPY_SELECTED_TAB_URLS_MENU_ID
+    ? tabs.map(getComparableTabUrl).join("\n")
+    : await formatGroupedTabs(tabs, action);
 
   await ensureOffscreenDocument();
   const response = await chrome.runtime.sendMessage({
     target: OFFSCREEN_COPY_MESSAGE_TARGET,
     type: "copy-text",
-    text: urls.join("\n")
+    text
   });
 
   if (!response?.ok) {
     throw new Error(response?.error || "The clipboard operation failed.");
   }
 
-  return urls.length;
+  return tabs.length;
+}
+
+// One bulleted tab per line: "- [title](url)" for Markdown, "- url" for
+// bullets. Each run of grouped tabs is preceded by a bullet with the group's
+// title and indented beneath it. Every line is bulleted so the nesting survives
+// pasting into outliners like Roam.
+async function formatGroupedTabs(tabs, action) {
+  const groupTitles = new Map();
+  for (const groupId of new Set(tabs.map((tab) => tab.groupId))) {
+    if (groupId === NO_GROUP) {
+      continue;
+    }
+
+    const group = await chrome.tabGroups.get(groupId).catch(() => undefined);
+    groupTitles.set(groupId, group?.title || "Unnamed group");
+  }
+
+  const escapeTitle = (title) => title.replace(/([\[\]])/g, "\\$1");
+  const isMarkdown = action === COPY_SELECTED_TAB_MARKDOWN_MENU_ID;
+  const lines = [];
+  let currentGroupId = NO_GROUP;
+
+  for (const tab of tabs) {
+    const url = getComparableTabUrl(tab);
+    const isGrouped = groupTitles.has(tab.groupId);
+    if (isGrouped && tab.groupId !== currentGroupId) {
+      lines.push(`- ${groupTitles.get(tab.groupId)}`);
+    }
+    currentGroupId = tab.groupId;
+    const link = isMarkdown ? `[${escapeTitle(tab.title || url)}](${url})` : url;
+    lines.push(`${isGrouped ? "  " : ""}- ${link}`);
+  }
+
+  return lines.join("\n");
 }
 
 async function runSelectedTabAction(action, windowId) {
@@ -549,15 +597,13 @@ async function runSelectedTabAction(action, windowId) {
     };
   }
 
-  if (action === COPY_SELECTED_TAB_URLS_MENU_ID) {
-    const copiedCount = await copySelectedTabUrls(windowId);
+  if (action in COPY_FORMATS) {
+    const copiedCount = await copySelectedTabs(windowId, action);
     return {
       count: copiedCount,
       message: copiedCount === 0
         ? "No selected tab URLs are available to copy."
-        : copiedCount === 1
-          ? "Copied 1 selected tab URL."
-          : `Copied ${copiedCount} selected tab URLs.`
+        : `Copied ${copiedCount} link${copiedCount === 1 ? "" : "s"}: ${COPY_FORMATS[action]}.`
     };
   }
 
@@ -577,7 +623,7 @@ async function ensureOffscreenDocument() {
     offscreenDocumentPromise = chrome.offscreen.createDocument({
       url: OFFSCREEN_DOCUMENT_PATH,
       reasons: ["CLIPBOARD"],
-      justification: "Copy the selected tab URLs to the clipboard"
+      justification: "Copy the selected tab links to the clipboard"
     }).finally(() => {
       offscreenDocumentPromise = undefined;
     });

@@ -15,7 +15,9 @@
         <p class="description">Run an action on the highlighted tabs in this window.</p>
         <div class="actions">
           <button id="move-selected-tabs" type="button">Move selected tabs to top</button>
-          <button id="copy-selected-tab-urls" class="secondary" type="button">Copy selected tab URLs</button>
+          <button class="secondary copy-selected-tabs" data-action="copy-selected-tab-markdown" type="button">Copy selected tab links: as title formatted md</button>
+          <button class="secondary copy-selected-tabs" data-action="copy-selected-tab-bullets" type="button">Copy selected tab links: as bullets</button>
+          <button class="secondary copy-selected-tabs" data-action="copy-selected-tab-urls" type="button">Copy selected tab links: plain</button>
         </div>
         <p id="tab-action-status" class="status" role="status" aria-live="polite"></p>
       </section>

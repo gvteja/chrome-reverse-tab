@@ -11,7 +11,9 @@
       <h1>Selected tabs</h1>
       <div class="actions">
         <button id="move-selected-tabs" type="button">Move selected tabs to top</button>
-        <button id="copy-selected-tab-urls" type="button">Copy selected tab URLs</button>
+        <button class="copy-selected-tabs" data-action="copy-selected-tab-markdown" type="button">Copy selected tab links: as title formatted md</button>
+        <button class="copy-selected-tabs" data-action="copy-selected-tab-bullets" type="button">Copy selected tab links: as bullets</button>
+        <button class="copy-selected-tabs" data-action="copy-selected-tab-urls" type="button">Copy selected tab links: plain</button>
       </div>
       <p id="status" role="status" aria-live="polite"></p>
       <button id="open-options" class="options-link" type="button">Extension options</button>

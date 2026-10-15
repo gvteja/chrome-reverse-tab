@@ -6,7 +6,7 @@ const NANO_LANGUAGE_MODEL_OPTIONS = {
 const prepareModelButton = document.getElementById("prepare-model");
 const checkStatusButton = document.getElementById("check-status");
 const moveSelectedTabsButton = document.getElementById("move-selected-tabs");
-const copySelectedTabUrlsButton = document.getElementById("copy-selected-tab-urls");
+const copySelectedTabsButtons = document.querySelectorAll(".copy-selected-tabs");
 const modelStatusMessage = document.getElementById("model-status");
 const tabActionStatusMessage = document.getElementById("tab-action-status");
 
@@ -52,9 +52,11 @@ moveSelectedTabsButton.addEventListener("click", () => {
   runSelectedTabAction("move-tab-to-top");
 });
 
-copySelectedTabUrlsButton.addEventListener("click", () => {
-  runSelectedTabAction("copy-selected-tab-urls");
-});
+for (const button of copySelectedTabsButtons) {
+  button.addEventListener("click", () => {
+    runSelectedTabAction(button.dataset.action);
+  });
+}
 
 async function runSelectedTabAction(action) {
   setTabActionButtonsDisabled(true);
@@ -108,7 +110,9 @@ function setButtonsDisabled(disabled) {
 
 function setTabActionButtonsDisabled(disabled) {
   moveSelectedTabsButton.disabled = disabled;
-  copySelectedTabUrlsButton.disabled = disabled;
+  copySelectedTabsButtons.forEach((button) => {
+    button.disabled = disabled;
+  });
 }
 
 function showStatus(message) {
