@@ -44,8 +44,6 @@ const NANO_LANGUAGE_MODEL_OPTIONS = {
 const MAX_MOVE_ATTEMPTS = 12;
 const RETRY_DELAY_MS = 75;
 const CREATED_TAB_METADATA_SETTLE_MS = 100;
-const ACTIVE_TAB_SETTLE_ATTEMPTS = 4;
-const ACTIVE_TAB_SETTLE_MS = 40;
 const STARTUP_RESTORE_GUARD_MS = 15000;
 const STARTUP_RESTORE_GUARD_STORAGE_KEY = "startupRestoreGuardUntil";
 const MOVE_TAB_TO_TOP_MENU_ID = "move-tab-to-top";
@@ -446,9 +444,8 @@ async function waitForTab(tabId) {
 }
 
 // Tabs the extension creates itself fire onCreated like user-opened tabs, but
-// they are already at their intended index. Re-placing them is normally a
-// no-op, but when another tab is opened during placement the re-run would
-// recreate the replacement at the top again and leapfrog the newer tab.
+// they are already at their intended index. Skip placement so a delayed
+// onCreated handler cannot move an older tab ahead of a newer tab.
 function markExtensionPlacedTab(tabId) {
   extensionPlacedTabs.add(tabId);
 
@@ -636,9 +633,7 @@ async function ensureOffscreenDocument() {
 // unpinned section, keeping their relative order. The highlighted set is
 // whatever was multi-selected in the tab strip (Cmd/Shift-click), or just the
 // active tab when nothing else is selected. Existing tabs hold live page state,
-// so they are moved in place rather than recreated (recreating would reload
-// them and lose that state); a plain move does not scroll the tab strip, which
-// is fine for a user-initiated action.
+// so they are moved in place. Chrome scrolls the moved active tab into view.
 async function moveSelectedTabsToTop(windowId) {
   const highlightedTabs = await chrome.tabs.query({ windowId, highlighted: true });
   const movableTabs = highlightedTabs
@@ -664,21 +659,8 @@ async function moveSelectedTabsToTop(windowId) {
 }
 
 async function placeNewTabAtTop(tabId, windowId) {
-  const tab = await getTab(tabId);
-  if (!tab || tab.pinned || shouldPreserveChromePlacedTab(tab)) {
-    return;
-  }
-
-  // Moving an already-active tab to the top does not make Chrome scroll the tab
-  // strip, so the strip stays parked at the bottom even though the new active
-  // tab is now at the top. Recreating the tab directly at the top index instead
-  // makes Chrome scroll to it the same way it scrolls to any freshly created
-  // tab. Only the active tab needs this; background tabs don't need a scroll and
-  // recreating them would steal focus.
-  if (await maybeRecreateActiveTabAtTop(tab, windowId)) {
-    return;
-  }
-
+  // Keep the original tab and its in-progress omnibox input. Chrome scrolls
+  // active tabs into view after a move, so no replacement tab is needed.
   await moveWithRetry(async () => {
     const currentTab = await getTab(tabId);
     if (!currentTab || currentTab.pinned || shouldPreserveChromePlacedTab(currentTab)) {
@@ -688,116 +670,6 @@ async function placeNewTabAtTop(tabId, windowId) {
     await ungroupTabIfGrouped(currentTab.id);
     await moveToTopOfUnpinnedTabs(currentTab.id, windowId);
   });
-}
-
-// External app launches (e.g. opening a link from Slack) create the tab a beat
-// before Chrome marks it active and brings it to the foreground. The metadata
-// settle delay can run during that gap, leaving tab.active false even though
-// Chrome is about to focus the tab. Only the recreate-at-top path scrolls the
-// tab strip, and it is gated on the tab being active, so without this the tab
-// lands at the top via a plain move and the strip never scrolls to it. Poll
-// briefly for the active state to settle so these tabs still scroll. Genuine
-// background tabs stay inactive through the poll and keep their no-scroll move;
-// recreating them would steal focus.
-async function waitForActiveTabToSettle(tab, windowId) {
-  if (tab.active) {
-    return tab;
-  }
-
-  if (!isLoadingTab(tab)) {
-    return undefined;
-  }
-
-  for (let attempt = 0; attempt < ACTIVE_TAB_SETTLE_ATTEMPTS; attempt += 1) {
-    await delay(ACTIVE_TAB_SETTLE_MS);
-
-    const refreshedTab = await getTab(tab.id);
-    if (!refreshedTab || refreshedTab.windowId !== windowId) {
-      return undefined;
-    }
-
-    if (refreshedTab.active) {
-      return refreshedTab;
-    }
-
-    if (!isLoadingTab(refreshedTab)) {
-      return undefined;
-    }
-  }
-
-  return undefined;
-}
-
-async function maybeRecreateActiveTabAtTop(tab, windowId) {
-  const activeTab = await waitForActiveTabToSettle(tab, windowId);
-  if (!activeTab) {
-    return false;
-  }
-
-  tab = activeTab;
-
-  const targetIndex = await getTopUnpinnedIndex(windowId);
-  if (tab.index === targetIndex) {
-    return false;
-  }
-
-  const url = getRecreatableTabUrl(tab);
-  if (url === undefined) {
-    return false;
-  }
-
-  // Create the replacement before removing the original so the active tab never
-  // briefly flips to a neighbor (which would flash that tab's content).
-  let createdTab;
-  try {
-    createdTab = await moveWithRetry(() =>
-      chrome.tabs.create(buildTopTabCreateProperties(url, targetIndex, windowId))
-    );
-  } catch (error) {
-    console.warn("Unable to recreate new tab at top:", error);
-    return false;
-  }
-
-  if (!Number.isInteger(createdTab?.id)) {
-    return false;
-  }
-
-  markExtensionPlacedTab(createdTab.id);
-
-  try {
-    await moveWithRetry(() => chrome.tabs.remove(tab.id));
-  } catch (error) {
-    console.warn("Unable to remove original tab after recreating at top:", error);
-  }
-
-  return true;
-}
-
-function getRecreatableTabUrl(tab) {
-  const url = getComparableTabUrl(tab);
-
-  // A blank new tab is recreated as the user's default new tab page (no url).
-  if (!url || isBlankNewTabUrl(url)) {
-    return "";
-  }
-
-  // Only http(s) URLs can be safely reopened by the extension. Privileged URLs
-  // (chrome://, file://, etc.) can't, so signal the caller to fall back to a
-  // move instead of removing a tab we couldn't recreate.
-  if (/^https?:\/\//i.test(url)) {
-    return url;
-  }
-
-  return undefined;
-}
-
-function buildTopTabCreateProperties(url, index, windowId) {
-  const properties = { active: true, index, windowId };
-  if (url) {
-    properties.url = url;
-  }
-
-  return properties;
 }
 
 async function ungroupTabIfGrouped(tabId) {
@@ -817,7 +689,7 @@ async function createNewTabAtTop(preferredWindowId) {
   }
 
   const targetIndex = await getTopUnpinnedIndex(windowId);
-  const createdTab = await chrome.tabs.create(buildTopTabCreateProperties("", targetIndex, windowId));
+  const createdTab = await chrome.tabs.create({ active: true, index: targetIndex, windowId });
 
   if (Number.isInteger(createdTab?.id)) {
     markExtensionPlacedTab(createdTab.id);
