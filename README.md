@@ -7,6 +7,7 @@ Tab placement
 - Links opened from pinned tabs start at the top of the unpinned tab section; subsequent links follow the existing child tabs in opening order.
 - Links opened from unpinned tabs appear below the opener in opening order: opener, first link, second link, third link.
 - Links opened from grouped tabs are added to the same tab group, after the opener's existing child tabs in that group.
+- This also applies to tabs created by other extensions when they supply `openerTabId`, including Notion middle-clicks from Vijay Vj UserJS.
 - Duplicated tabs open immediately below the tab being duplicated.
 
 Automatic tab group creation:

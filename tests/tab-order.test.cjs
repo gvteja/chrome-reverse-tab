@@ -81,6 +81,45 @@ test('three rapidly opened links retain opening order', async () => {
   assert.deepEqual(h.ids(), [1, 2, 3, 4]);
 });
 
+test('extension-created links follow their opener and existing children in opening order', async () => {
+  const h = harness([
+    { id: 10, pinned: true },
+    { id: 11 },
+    { id: 1, active: true, groupId: 7, url: 'https://app.notion.com/page' },
+    ...[4, 3, 2].map(id => ({ id, active: false, openerTabId: 1, url: `https://example.com/${id}` })),
+    { id: 9, active: false, openerTabId: 1, groupId: 7, url: 'https://example.com/older' }
+  ]);
+  h.run('[2, 3, 4].forEach(id => pendingCreatedTabs.add(id))');
+  for (const id of [2, 3, 4]) {
+    await h.run(`placeCreatedTab({ id: ${id}, windowId: 1 })`);
+    h.run(`pendingCreatedTabs.delete(${id})`);
+  }
+  assert.deepEqual(h.ids(), [10, 11, 1, 9, 2, 3, 4]);
+  assert.deepEqual(h.tabs().filter(tab => tab.active).map(tab => tab.id), [1]);
+  for (const id of [2, 3, 4]) assert.equal(h.tabs().find(tab => tab.id === id).groupId, 7);
+});
+
+test('an adjacent extension-created link follows existing children instead of acting as a duplicate', async () => {
+  const h = harness([
+    { id: 1, groupId: 7, url: 'https://app.notion.com/page' },
+    { id: 3, openerTabId: 1, url: 'https://example.com/new' },
+    { id: 2, groupId: 7, openerTabId: 1, url: 'https://example.com/older' }
+  ]);
+  await h.run('placeCreatedTab({ id: 3, windowId: 1 })');
+  assert.deepEqual(h.ids(), [1, 2, 3]);
+  assert.equal(h.tabs()[2].groupId, 7);
+});
+
+test('a same-URL duplicate stays immediately below its opener', async () => {
+  const h = harness([
+    { id: 1, groupId: 7, url: 'https://example.com/page' },
+    { id: 2, groupId: 7, openerTabId: 1, url: 'https://example.com/child' },
+    { id: 3, openerTabId: 1, url: 'https://example.com/page' }
+  ]);
+  await h.run('placeCreatedTab({ id: 3, windowId: 1 })');
+  assert.deepEqual(h.ids(), [1, 3, 2]);
+});
+
 test('existing grouped children remain ahead of the new link after worker restart', async () => {
   const h = harness([
     { id: 1, groupId: 7 }, { id: 4, openerTabId: 1 },

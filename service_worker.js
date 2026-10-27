@@ -268,6 +268,12 @@ async function placeCreatedTab(createdTab, options = {}) {
     return;
   }
 
+  // tabs.create can provide an opener without a webNavigation event.
+  if (Number.isInteger(tab.openerTabId)) {
+    await placeLinkCreatedTab(tab.id, tab.openerTabId);
+    return;
+  }
+
   await placeNewTabAtTop(tab.id, tab.windowId);
 }
 
@@ -361,9 +367,10 @@ function isDuplicateOfOpener(tab, opener) {
 }
 
 function isChromePlacedDuplicateOfOpener(tab, opener) {
-  // Normal page URLs are unavailable without the "tabs" permission, but Chrome
-  // initially creates duplicated tabs immediately after their opener.
-  return tab.index === opener.index + 1;
+  // Use position only when URL data is missing. A different URL is a link,
+  // even when another extension creates it immediately after its opener.
+  return (!getComparableTabUrl(tab) || !getComparableTabUrl(opener)) &&
+    tab.index === opener.index + 1;
 }
 
 function getComparableTabUrl(tab) {
