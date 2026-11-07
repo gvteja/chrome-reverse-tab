@@ -7,7 +7,7 @@ Tab placement
 - Links opened from pinned tabs start at the top of the unpinned tab section; subsequent links follow the existing child tabs in opening order.
 - Links opened from unpinned tabs appear below the opener in opening order: opener, first link, second link, third link.
 - Links opened from grouped tabs are added to the same tab group, after the opener's existing child tabs in that group.
-- This also applies to tabs created by other extensions when they supply `openerTabId`, including Notion middle-clicks from Vijay Vj UserJS.
+- This also applies to tabs created by other extensions when they supply `openerTabId`, including Notion middle-clicks from Vijay Vj UserJS. These tabs first go to the top, then move beside their source when Chrome confirms the initial link navigation. Tabs with no confirmed link navigation stay at the top.
 - Duplicated tabs open immediately below the tab being duplicated.
 
 Automatic tab group creation:
@@ -37,6 +37,8 @@ The extension adds these actions to the toolbar popup, tab-strip/page right-clic
   - **plain**: just the URL.
 
 ## Install locally
+If the Chrome Web Store copy is installed, disable it before loading this folder. Two enabled copies can move the same tabs.
+
 1. Open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Click **Load unpacked**.
@@ -45,7 +47,7 @@ The extension adds these actions to the toolbar popup, tab-strip/page right-clic
 
 Permissions
 - No host permissions are requested, and the extension does not read page content. 
-- The `webNavigation` permission is used only to receive the source tab ID for tabs created by link navigation. 
+- The `webNavigation` permission is used to receive the source tab ID and initial navigation type for new tabs. This distinguishes links from external launches, which can also have an `openerTabId`.
 - The `tabs` permission is used only to read tab metadata for naming automatically created groups and detecting duplicated tabs. 
 - The `tabGroups` permission is used only to name and color automatically created groups, and to read group titles when copying selected tabs as Markdown. 
 - The `storage` permission is used only to remember one expiring timestamp for the brief startup/session-restore guard. 

@@ -1,6 +1,6 @@
 # Reverse Vertical Tab Placement Privacy Policy
 
-Effective date: October 30, 2026
+Effective date: November 2, 2026
 
 Reverse Vertical Tab Placement uses information about your open Chrome tabs to arrange tabs, create groups, and copy selected tab links. This information is processed on your device. The extension does not send it to the developer or an external server.
 
@@ -8,7 +8,7 @@ Reverse Vertical Tab Placement uses information about your open Chrome tabs to a
 
 The extension reads tab titles, URLs, hostnames, tab and window identifiers, tab positions, selection and pinned states, opener relationships, and tab group information. It uses this information to place related tabs together, detect duplicate tabs, name groups, and format links that you choose to copy.
 
-The extension receives events about newly opened tabs and their source tabs. It does not read the contents of web pages, forms, passwords, cookies, or your saved browsing history. It does not use advertising, analytics, or tracking services.
+The extension receives events about newly opened tabs, their source tabs, and their initial navigation type. It uses the navigation type to distinguish links from external launches. It does not read the contents of web pages, forms, passwords, cookies, or your saved browsing history. It does not use advertising, analytics, or tracking services.
 
 ## Local storage and retention
 

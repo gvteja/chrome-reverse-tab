@@ -68,6 +68,9 @@ const autoGroupCandidates = new Map();
 const windowQueues = new Map();
 const pendingCreatedTabs = new Set();
 const linkSources = new Map();
+const createdTabNavigations = new Map();
+const tabCreationOrder = new Map();
+let nextTabCreationOrder = 0;
 let startupRestoreGuardUntil = 0;
 let nanoSessionPromise;
 let offscreenDocumentPromise;
@@ -138,12 +141,29 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener((details) => {
   }, SOURCE_TAB_TTL_MS);
 });
 
+chrome.webNavigation.onCommitted.addListener((details) => {
+  const navigation = createdTabNavigations.get(details.tabId);
+  if (details.frameId !== 0 || !navigation || navigation.committed) {
+    return;
+  }
+
+  navigation.committed = details;
+  enqueueForWindow(navigation.tab.windowId, () => placePendingOpenerTab(navigation));
+});
+
+chrome.webNavigation.onErrorOccurred.addListener((details) => {
+  if (details.frameId === 0 && !createdTabNavigations.get(details.tabId)?.committed) {
+    createdTabNavigations.delete(details.tabId);
+  }
+});
+
 chrome.tabs.onCreated.addListener((tab) => {
   if (!Number.isInteger(tab.id) || !Number.isInteger(tab.windowId)) {
     return;
   }
 
   const createdAt = Date.now();
+  trackCreatedTabNavigation(tab);
   pendingCreatedTabs.add(tab.id);
   const startupRestoreGuardActive = isStartupRestoreGuardActive(createdAt);
 
@@ -186,6 +206,8 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   extensionPlacedTabs.delete(tabId);
   autoGroupCandidates.delete(tabId);
   pendingCreatedTabs.delete(tabId);
+  createdTabNavigations.delete(tabId);
+  tabCreationOrder.delete(tabId);
   linkSources.delete(tabId);
   for (const [childId, sourceId] of linkSources) {
     if (sourceId === tabId) linkSources.delete(childId);
@@ -230,21 +252,26 @@ function enqueueForWindow(windowId, task) {
 }
 
 async function placeCreatedTab(createdTab, options = {}) {
+  const navigation = createdTabNavigations.get(createdTab.id);
   if (extensionPlacedTabs.delete(createdTab.id)) {
+    createdTabNavigations.delete(createdTab.id);
     return;
   }
 
   const tab = await getTab(createdTab.id);
   if (!tab || tab.pinned) {
+    createdTabNavigations.delete(createdTab.id);
     return;
   }
 
   if (handledNavigationTabs.has(tab.id)) {
+    createdTabNavigations.delete(tab.id);
     return;
   }
 
   const sourceTabId = navigationSources.get(tab.id);
   if (Number.isInteger(sourceTabId)) {
+    createdTabNavigations.delete(tab.id);
     navigationSources.delete(tab.id);
     markNavigationTabHandled(tab.id);
     await placeLinkCreatedTab(tab.id, sourceTabId);
@@ -255,26 +282,73 @@ async function placeCreatedTab(createdTab, options = {}) {
     options.preserveAsStartupRestore &&
     await shouldPreserveStartupRestoreTab(tab, createdTab)
   ) {
+    createdTabNavigations.delete(tab.id);
     return;
   }
 
-  const duplicateSourceTabId = await getDuplicateSourceTabId(tab);
+  const duplicateSourceTabId = await getDuplicateSourceTabId(tab, createdTab);
   if (Number.isInteger(duplicateSourceTabId)) {
+    createdTabNavigations.delete(tab.id);
     await placeLinkCreatedTab(tab.id, duplicateSourceTabId, { append: false });
     return;
   }
 
   if (shouldPreserveChromePlacedTab(tab)) {
+    createdTabNavigations.delete(tab.id);
     return;
   }
 
-  // tabs.create can provide an opener without a webNavigation event.
-  if (Number.isInteger(tab.openerTabId)) {
-    await placeLinkCreatedTab(tab.id, tab.openerTabId);
-    return;
+  // Chrome also gives external URLs and blank new tabs an opener. Start at
+  // the top; only a confirmed link navigation can use this fallback. This
+  // still supports tabs.create({ openerTabId }) from other extensions.
+  linkSources.set(tab.id, null);
+  if (
+    navigation &&
+    Number.isInteger(tab.openerTabId) &&
+    !isBlankNewTabUrl(getComparableTabUrl(createdTab)) &&
+    !isBlankNewTabUrl(getComparableTabUrl(tab))
+  ) {
+    navigation.openerTabId = tab.openerTabId;
+  } else {
+    createdTabNavigations.delete(tab.id);
   }
 
   await placeNewTabAtTop(tab.id, tab.windowId);
+  if (navigation?.committed) {
+    await placePendingOpenerTab(navigation);
+  }
+}
+
+function trackCreatedTabNavigation(tab) {
+  const navigation = { tab, committed: undefined, openerTabId: undefined };
+  createdTabNavigations.set(tab.id, navigation);
+  tabCreationOrder.set(tab.id, ++nextTabCreationOrder);
+  setTimeout(() => {
+    if (createdTabNavigations.get(tab.id) === navigation) {
+      createdTabNavigations.delete(tab.id);
+    }
+  }, SOURCE_TAB_TTL_MS);
+  return navigation;
+}
+
+async function placePendingOpenerTab(navigation) {
+  const { tab, committed, openerTabId } = navigation;
+  if (createdTabNavigations.get(tab.id) !== navigation || !committed) return;
+  createdTabNavigations.delete(tab.id);
+
+  // AUTO_TOPLEVEL (external launches) is called start_page by webNavigation.
+  // Use positive link evidence, not the presence of an opener alone.
+  if (
+    committed.transitionType !== "link" ||
+    committed.transitionQualifiers?.some((value) => value === "from_address_bar" || value === "forward_back") ||
+    !Number.isInteger(openerTabId) ||
+    handledNavigationTabs.has(tab.id)
+  ) {
+    return;
+  }
+
+  markNavigationTabHandled(tab.id);
+  await placeLinkCreatedTab(tab.id, openerTabId);
 }
 
 async function maybePlaceNavigationCreatedTab(tabId, sourceTabId) {
@@ -337,7 +411,7 @@ function isLoadingTab(tab) {
   return tab.status === "loading" || Boolean(tab.pendingUrl);
 }
 
-async function getDuplicateSourceTabId(tab) {
+async function getDuplicateSourceTabId(tab, createdTab) {
   if (!Number.isInteger(tab.openerTabId)) {
     return undefined;
   }
@@ -347,7 +421,7 @@ async function getDuplicateSourceTabId(tab) {
     return undefined;
   }
 
-  if (isDuplicateOfOpener(tab, opener) || isChromePlacedDuplicateOfOpener(tab, opener)) {
+  if (isDuplicateOfOpener(createdTab, opener)) {
     return opener.id;
   }
 
@@ -355,7 +429,9 @@ async function getDuplicateSourceTabId(tab) {
 }
 
 function isDuplicateOfOpener(tab, opener) {
-  const tabUrl = getComparableTabUrl(tab);
+  // A duplicate already has a committed URL when it is created. A fresh
+  // external navigation can have the same pendingUrl as its incidental opener.
+  const tabUrl = tab.url;
   const openerUrl = getComparableTabUrl(opener);
 
   return Boolean(
@@ -364,13 +440,6 @@ function isDuplicateOfOpener(tab, opener) {
     tabUrl === openerUrl &&
     !isBlankNewTabUrl(tabUrl)
   );
-}
-
-function isChromePlacedDuplicateOfOpener(tab, opener) {
-  // Use position only when URL data is missing. A different URL is a link,
-  // even when another extension creates it immediately after its opener.
-  return (!getComparableTabUrl(tab) || !getComparableTabUrl(opener)) &&
-    tab.index === opener.index + 1;
 }
 
 function getComparableTabUrl(tab) {
@@ -739,7 +808,9 @@ async function moveNextToOpener(tabId, openerTabId, { append = true } = {}) {
           !pendingCreatedTabs.has(sibling.id) &&
           !sibling.pinned &&
           sibling.groupId === refreshedTab.groupId &&
-          (linkSources.get(sibling.id) ?? sibling.openerTabId) === openerTabId &&
+          (linkSources.has(sibling.id) ? linkSources.get(sibling.id) : sibling.openerTabId) === openerTabId &&
+          // Network responses can commit in a different order from tab creation.
+          !(tabCreationOrder.get(sibling.id) > tabCreationOrder.get(tabId)) &&
           (!anchor || sibling.index > anchor.index)
         ) {
           anchor = sibling;
